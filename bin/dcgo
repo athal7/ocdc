@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+#
+# dcgo - Navigate to an existing devcontainer clone
+#
+# Usage:
+#   dcgo                    # List available clones for current repo
+#   dcgo <branch>           # Go to specific branch clone
+#   dcgo --vscode <branch>  # Open in VS Code instead of printing cd
+#
+# Examples:
+#   dcgo feature-x          # Print: cd ~/.cache/devcontainer-clones/myapp/feature-x
+#   dcgo --vscode feature-x # Opens VS Code in that directory
+#   eval $(dcgo feature-x)  # Actually cd to the directory
+#
+# In VS Code terminal, automatically opens VS Code window.
+# In other terminals, prints the cd command (pipe to eval to execute).
+#
+# Related commands:
+#   dcup     - Start devcontainer (creates clone if needed)
+#   dclist   - List active instances
+#   dcdown   - Stop container
+
+set -euo pipefail
+
+CACHE_DIR="${HOME}/.cache/devcontainer-multi"
+PORTS_FILE="${CACHE_DIR}/ports.json"
+CLONES_DIR="${HOME}/.cache/devcontainer-clones"
+
+log() { echo "[dcgo] $*" >&2; }
+error() { echo "[dcgo] ERROR: $*" >&2; exit 1; }
+
+# Parse arguments
+BRANCH=""
+FORCE_VSCODE=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --vscode|-v)
+      FORCE_VSCODE=true
+      shift
+      ;;
+    --help|-h)
+      sed -n '2,/^$/p' "$0" | sed 's/^# //' | sed 's/^#//'
+      exit 0
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      exit 1
+      ;;
+    *)
+      BRANCH="$1"
+      shift
+      ;;
+  esac
+done
+
+# Detect if running in VS Code integrated terminal
+is_vscode_terminal() {
+  [[ -n "${TERM_PROGRAM:-}" ]] && [[ "$TERM_PROGRAM" == "vscode" ]]
+}
+
+# Get current repo name
+get_current_repo() {
+  if git rev-parse --git-dir >/dev/null 2>&1; then
+    basename "$(git rev-parse --show-toplevel)"
+  else
+    echo ""
+  fi
+}
+
+# List all clones for a repo
+list_clones() {
+  local repo="$1"
+  local repo_dir="${CLONES_DIR}/${repo}"
+  
+  if [[ -d "$repo_dir" ]]; then
+    for branch_dir in "$repo_dir"/*/; do
+      [[ -d "$branch_dir" ]] || continue
+      local branch=$(basename "$branch_dir")
+      local port=$(jq -r --arg ws "${branch_dir%/}" '.[$ws].port // "-"' "$PORTS_FILE" 2>/dev/null || echo "-")
+      echo "$branch $port"
+    done
+  fi
+}
+
+# If no branch specified, list available and maybe select
+if [[ -z "$BRANCH" ]]; then
+  REPO=$(get_current_repo)
+  
+  if [[ -z "$REPO" ]]; then
+    error "Not in a git repository. Specify a branch or run from within a repo."
+  fi
+  
+  log "Available clones for $REPO:"
+  echo ""
+  
+  clones=$(list_clones "$REPO")
+  if [[ -z "$clones" ]]; then
+    log "No clones found. Create one with: dcup <branch>"
+    exit 0
+  fi
+  
+  printf "  %-20s %s\n" "BRANCH" "PORT"
+  printf "  %-20s %s\n" "------" "----"
+  echo "$clones" | while read -r branch port; do
+    printf "  %-20s %s\n" "$branch" "$port"
+  done
+  
+  echo ""
+  log "Usage: dcgo <branch>"
+  exit 0
+fi
+
+# Find the clone path
+REPO=$(get_current_repo)
+if [[ -z "$REPO" ]]; then
+  # Try to find the branch in any repo's clones
+  for repo_dir in "$CLONES_DIR"/*/; do
+    [[ -d "$repo_dir" ]] || continue
+    if [[ -d "${repo_dir}${BRANCH}" ]]; then
+      WORKSPACE="${repo_dir}${BRANCH}"
+      break
+    fi
+  done
+else
+  WORKSPACE="${CLONES_DIR}/${REPO}/${BRANCH}"
+fi
+
+if [[ -z "${WORKSPACE:-}" ]] || [[ ! -d "$WORKSPACE" ]]; then
+  error "Clone not found for branch '$BRANCH'. Create it with: dcup $BRANCH"
+fi
+
+# Navigate or open
+if [[ "$FORCE_VSCODE" == "true" ]] || is_vscode_terminal; then
+  log "Opening $WORKSPACE in VS Code..."
+  code "$WORKSPACE"
+else
+  # Print cd command - user can eval it or copy/paste
+  echo "cd $WORKSPACE"
+fi

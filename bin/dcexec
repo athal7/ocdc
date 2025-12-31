@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+#
+# dcexec - Execute a command in a running devcontainer
+#
+# Usage:
+#   dcexec <command> [args...]   # Run command in current workspace's container
+#   dcexec --workspace <path> <command> [args...]
+#
+# Examples:
+#   dcexec bash                  # Open shell in container
+#   dcexec bin/rails console    # Run rails console
+#   dcexec npm test             # Run tests
+#
+# Related commands:
+#   dcup     - Start devcontainer
+#   dcdown   - Stop devcontainer
+#   dclist   - List active instances
+
+set -euo pipefail
+
+CACHE_DIR="${HOME}/.cache/devcontainer-multi"
+PORTS_FILE="${CACHE_DIR}/ports.json"
+OVERRIDES_DIR="${CACHE_DIR}/overrides"
+
+error() { echo "[dcexec] ERROR: $*" >&2; exit 1; }
+
+# Parse arguments
+WORKSPACE=""
+CMD_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --workspace|-w)
+      WORKSPACE="$2"
+      shift 2
+      ;;
+    --help|-h)
+      sed -n '2,/^$/p' "$0" | sed 's/^# //' | sed 's/^#//'
+      exit 0
+      ;;
+    --)
+      shift
+      CMD_ARGS+=("$@")
+      break
+      ;;
+    *)
+      CMD_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+[[ ${#CMD_ARGS[@]} -gt 0 ]] || error "No command specified. Usage: dcexec <command> [args...]"
+
+# Determine workspace
+if [[ -z "$WORKSPACE" ]]; then
+  if git rev-parse --git-dir >/dev/null 2>&1; then
+    WORKSPACE=$(git rev-parse --show-toplevel)
+  else
+    WORKSPACE=$(pwd)
+  fi
+fi
+
+# Resolve to absolute path
+WORKSPACE=$(cd "$WORKSPACE" 2>/dev/null && pwd || echo "$WORKSPACE")
+
+# Check if workspace is tracked
+if ! jq -e --arg ws "$WORKSPACE" '.[$ws]' "$PORTS_FILE" >/dev/null 2>&1; then
+  error "No devcontainer tracked for: $WORKSPACE\nUse 'dcup' to start one."
+fi
+
+# Get workspace ID for override file
+WORKSPACE_ID=$(echo "$WORKSPACE" | md5 -q 2>/dev/null || echo "$WORKSPACE" | md5sum | cut -d' ' -f1)
+OVERRIDE_FILE="${OVERRIDES_DIR}/${WORKSPACE_ID}.json"
+
+# Build exec args
+EXEC_ARGS=("--workspace-folder" "$WORKSPACE")
+
+if [[ -f "$OVERRIDE_FILE" ]]; then
+  EXEC_ARGS+=("--override-config" "$OVERRIDE_FILE")
+fi
+
+# Execute
+exec devcontainer exec "${EXEC_ARGS[@]}" "${CMD_ARGS[@]}"

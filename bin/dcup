@@ -1,0 +1,286 @@
+#!/usr/bin/env bash
+#
+# dcup - Start a devcontainer with auto-assigned port
+#
+# Enables running multiple devcontainer instances simultaneously by:
+#   - Auto-assigning ports from a configurable range (default: 13000-13099)
+#   - Creating shallow clones for branch-based development (worktrees don't work with devcontainers)
+#   - Generating ephemeral override configs (not checked into repo)
+#   - Tracking port assignments to avoid conflicts
+#
+# Usage:
+#   dcup                    # Start devcontainer for current directory
+#   dcup <branch>           # Create clone for branch, start devcontainer
+#   dcup --remove-existing  # Rebuild container from scratch
+#   dcup --no-open          # Don't open VS Code (just start container)
+#
+# Examples:
+#   cd ~/Projects/myapp && dcup              # Start on port 13000
+#   cd ~/Projects/myapp && dcup feature-x    # Clone on port 13001
+#
+# The container's internal port (e.g., 3000) is mapped to the assigned host port.
+# Access your app at http://localhost:<assigned-port>
+#
+# Behavior:
+#   - In VS Code terminal: Opens clone in new VS Code window with devcontainer
+#   - In other terminals: Prints cd command to navigate to clone
+#
+# Why clones instead of worktrees?
+#   Git worktrees have a .git file pointing to the main repo's .git directory.
+#   This path breaks inside containers since the main repo isn't mounted.
+#   Clones are fully self-contained and work reliably with devcontainers.
+#
+# Related commands:
+#   dcdown   - Stop container and release port
+#   dclist   - List active instances
+#   dcexec   - Execute command in container
+#   dcgo     - Navigate to an existing clone
+#
+# Configuration:
+#   ~/.config/devcontainer-multi/config.json
+#   {
+#     "portRangeStart": 13000,
+#     "portRangeEnd": 13099
+#   }
+
+set -euo pipefail
+
+# Configuration
+CONFIG_DIR="${HOME}/.config/devcontainer-multi"
+CONFIG_FILE="${CONFIG_DIR}/config.json"
+CACHE_DIR="${HOME}/.cache/devcontainer-multi"
+PORTS_FILE="${CACHE_DIR}/ports.json"
+OVERRIDES_DIR="${CACHE_DIR}/overrides"
+CLONES_DIR="${HOME}/.cache/devcontainer-clones"
+
+# Defaults
+DEFAULT_PORT_START=13000
+DEFAULT_PORT_END=13099
+
+# Parse arguments
+BRANCH=""
+REMOVE_EXISTING=false
+NO_OPEN=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --remove-existing|-r)
+      REMOVE_EXISTING=true
+      shift
+      ;;
+    --no-open|-n)
+      NO_OPEN=true
+      shift
+      ;;
+    --help|-h)
+      sed -n '2,/^$/p' "$0" | sed 's/^# //' | sed 's/^#//'
+      exit 0
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      exit 1
+      ;;
+    *)
+      BRANCH="$1"
+      shift
+      ;;
+  esac
+done
+
+# Detect if running in VS Code integrated terminal
+is_vscode_terminal() {
+  [[ -n "${TERM_PROGRAM:-}" ]] && [[ "$TERM_PROGRAM" == "vscode" ]]
+}
+
+# Ensure directories exist
+mkdir -p "$CONFIG_DIR" "$CACHE_DIR" "$OVERRIDES_DIR" "$CLONES_DIR"
+[[ -f "$PORTS_FILE" ]] || echo '{}' > "$PORTS_FILE"
+[[ -f "$CONFIG_FILE" ]] || echo '{}' > "$CONFIG_FILE"
+
+# Load configuration
+PORT_START=$(jq -r ".portRangeStart // $DEFAULT_PORT_START" "$CONFIG_FILE")
+PORT_END=$(jq -r ".portRangeEnd // $DEFAULT_PORT_END" "$CONFIG_FILE")
+
+log() { echo "[dcup] $*"; }
+error() { echo "[dcup] ERROR: $*" >&2; exit 1; }
+
+# Check for devcontainer CLI
+command -v devcontainer >/dev/null 2>&1 || error "devcontainer CLI not found. Install with: npm install -g @devcontainers/cli"
+
+# Check we're in a git repo
+git rev-parse --git-dir >/dev/null 2>&1 || error "Not in a git repository"
+
+# Get repo info
+REPO_ROOT=$(git rev-parse --show-toplevel)
+REPO_NAME=$(basename "$REPO_ROOT")
+REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
+
+# Determine workspace directory
+if [[ -n "$BRANCH" ]]; then
+  # Branch specified - create/use clone
+  CLONE_BASE="${CLONES_DIR}/${REPO_NAME}"
+  WORKSPACE="${CLONE_BASE}/${BRANCH}"
+  
+  if [[ ! -d "$WORKSPACE" ]]; then
+    mkdir -p "$CLONE_BASE"
+    log "Creating clone for branch '$BRANCH'..."
+    
+    if [[ -n "$REMOTE_URL" ]]; then
+      # Clone from remote with reference to save space
+      if git clone --reference "$REPO_ROOT" --dissociate --branch "$BRANCH" "$REMOTE_URL" "$WORKSPACE" 2>/dev/null; then
+        log "Created clone from remote branch '$BRANCH'"
+      elif git clone --reference "$REPO_ROOT" --dissociate "$REMOTE_URL" "$WORKSPACE" 2>/dev/null; then
+        # Branch doesn't exist remotely, create it locally
+        cd "$WORKSPACE"
+        git checkout -b "$BRANCH" 2>/dev/null || git checkout "$BRANCH"
+        log "Created clone with new branch '$BRANCH'"
+      else
+        error "Failed to clone repository for branch '$BRANCH'"
+      fi
+    else
+      # No remote, do a local clone
+      git clone "$REPO_ROOT" "$WORKSPACE"
+      cd "$WORKSPACE"
+      git checkout -b "$BRANCH" 2>/dev/null || git checkout "$BRANCH"
+      log "Created local clone with branch '$BRANCH'"
+    fi
+  else
+    log "Using existing clone at $WORKSPACE"
+    # Update the clone
+    cd "$WORKSPACE"
+    git fetch origin 2>/dev/null || true
+    git checkout "$BRANCH" 2>/dev/null || true
+  fi
+else
+  WORKSPACE="$REPO_ROOT"
+fi
+
+# Check for devcontainer.json
+if [[ ! -f "$WORKSPACE/.devcontainer/devcontainer.json" ]] && [[ ! -f "$WORKSPACE/.devcontainer.json" ]]; then
+  error "No devcontainer.json found in $WORKSPACE"
+fi
+
+# Generate workspace identifier (hash of absolute path)
+WORKSPACE_ID=$(echo "$WORKSPACE" | md5 -q 2>/dev/null || echo "$WORKSPACE" | md5sum | cut -d' ' -f1)
+
+# Find available port
+find_available_port() {
+  for port in $(seq "$PORT_START" "$PORT_END"); do
+    # Check if port is in use by system
+    if ! lsof -i ":$port" >/dev/null 2>&1; then
+      # Check if already assigned to another workspace
+      local assigned_ws=$(jq -r --argjson p "$port" 'to_entries[] | select(.value.port == $p) | .key' "$PORTS_FILE" 2>/dev/null || true)
+      if [[ -z "$assigned_ws" ]]; then
+        echo "$port"
+        return
+      fi
+    fi
+  done
+  error "No available ports in range $PORT_START-$PORT_END. Use 'dcdown' to stop unused instances or 'dclist' to see active ones."
+}
+
+# Get or assign port for this workspace
+get_port() {
+  local existing_port=$(jq -r --arg ws "$WORKSPACE" '.[$ws].port // empty' "$PORTS_FILE")
+  if [[ -n "$existing_port" ]]; then
+    echo "$existing_port"
+  else
+    find_available_port
+  fi
+}
+
+PORT=$(get_port)
+
+# Save port assignment
+save_port() {
+  local tmp=$(mktemp)
+  jq --arg ws "$WORKSPACE" --argjson port "$PORT" --arg repo "$REPO_NAME" --arg branch "${BRANCH:-$(git -C "$WORKSPACE" branch --show-current 2>/dev/null || echo 'main')}" \
+    '.[$ws] = {"port": $port, "repo": $repo, "branch": $branch, "started": now | todate}' \
+    "$PORTS_FILE" > "$tmp" && mv "$tmp" "$PORTS_FILE"
+}
+
+# Read the original devcontainer.json to find the internal port
+DEVCONTAINER_JSON="$WORKSPACE/.devcontainer/devcontainer.json"
+[[ -f "$DEVCONTAINER_JSON" ]] || DEVCONTAINER_JSON="$WORKSPACE/.devcontainer.json"
+
+# Try to detect internal port from runArgs or forwardPorts
+INTERNAL_PORT=$(jq -r '
+  (.runArgs // []) | map(select(test("^[0-9]+:[0-9]+$"))) | .[0] // "" | split(":") | .[1] // "",
+  (.forwardPorts // []) | .[0] // ""
+' "$DEVCONTAINER_JSON" 2>/dev/null | grep -v '^$' | head -1)
+
+# Default to 3000 if we couldn't detect
+INTERNAL_PORT="${INTERNAL_PORT:-3000}"
+
+# Also check for -p in runArgs (format: -p HOST:CONTAINER or -p CONTAINER)
+if [[ -z "$INTERNAL_PORT" ]] || [[ "$INTERNAL_PORT" == "null" ]]; then
+  INTERNAL_PORT=$(jq -r '
+    (.runArgs // []) as $args |
+    ($args | to_entries | map(select(.value == "-p")) | .[0].key // -1) as $idx |
+    if $idx >= 0 then ($args[$idx + 1] // "" | split(":") | .[-1]) else "" end
+  ' "$DEVCONTAINER_JSON" 2>/dev/null || echo "")
+  INTERNAL_PORT="${INTERNAL_PORT:-3000}"
+fi
+
+# Generate override file
+OVERRIDE_FILE="${OVERRIDES_DIR}/${WORKSPACE_ID}.json"
+cat > "$OVERRIDE_FILE" << EOF
+{
+  "name": "${REPO_NAME} (port ${PORT})",
+  "runArgs": ["-p", "${PORT}:${INTERNAL_PORT}"]
+}
+EOF
+
+log "Workspace: $WORKSPACE"
+log "Port mapping: localhost:$PORT -> container:$INTERNAL_PORT"
+
+# Build devcontainer up arguments
+UP_ARGS=(
+  "--workspace-folder" "$WORKSPACE"
+  "--override-config" "$OVERRIDE_FILE"
+)
+
+if [[ "$REMOVE_EXISTING" == "true" ]]; then
+  UP_ARGS+=("--remove-existing-container")
+  log "Removing existing container..."
+fi
+
+# Save port assignment before starting
+save_port
+
+log "Starting devcontainer..."
+echo ""
+
+# Run devcontainer up
+if devcontainer up "${UP_ARGS[@]}"; then
+  echo ""
+  log "Devcontainer started successfully!"
+  log "Access your app at: http://localhost:$PORT"
+  echo ""
+  
+  # If this is a clone (not current directory), help user navigate
+  if [[ -n "$BRANCH" ]] && [[ "$NO_OPEN" != "true" ]]; then
+    if is_vscode_terminal; then
+      log "Opening clone in VS Code..."
+      code "$WORKSPACE"
+    else
+      echo ""
+      log "To navigate to the clone:"
+      echo "  cd $WORKSPACE"
+      echo ""
+      log "Or use: dcgo $BRANCH"
+    fi
+  fi
+  
+  echo ""
+  log "Useful commands:"
+  log "  dcexec <cmd>     - Execute command in container"
+  log "  dcdown           - Stop this container"
+  log "  dclist           - List all instances"
+  [[ -n "$BRANCH" ]] && log "  dcgo $BRANCH     - Navigate to this clone"
+else
+  # Clean up port assignment on failure
+  tmp=$(mktemp)
+  jq --arg ws "$WORKSPACE" 'del(.[$ws])' "$PORTS_FILE" > "$tmp" && mv "$tmp" "$PORTS_FILE"
+  error "Failed to start devcontainer"
+fi

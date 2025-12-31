@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+#
+# dclist - List active devcontainer instances
+#
+# Usage:
+#   dclist           # List all tracked instances
+#   dclist --json    # Output as JSON
+#   dclist --active  # Only show instances with running containers
+#
+# Related commands:
+#   dcup     - Start devcontainer
+#   dcdown   - Stop devcontainer
+#   dcgo     - Navigate to clone
+
+set -euo pipefail
+
+CACHE_DIR="${HOME}/.cache/devcontainer-multi"
+PORTS_FILE="${CACHE_DIR}/ports.json"
+
+# Parse arguments
+JSON_OUTPUT=false
+ACTIVE_ONLY=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --json|-j)
+      JSON_OUTPUT=true
+      shift
+      ;;
+    --active|-a)
+      ACTIVE_ONLY=true
+      shift
+      ;;
+    --help|-h)
+      sed -n '2,/^$/p' "$0" | sed 's/^# //' | sed 's/^#//'
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      exit 1
+      ;;
+  esac
+done
+
+# Check for ports file after parsing args
+[[ -f "$PORTS_FILE" ]] || { echo "No devcontainer instances tracked."; exit 0; }
+
+# Check if port is actually in use
+is_port_active() {
+  lsof -i ":$1" >/dev/null 2>&1
+}
+
+# Get current workspace for highlighting
+CURRENT_WS=""
+if git rev-parse --git-dir >/dev/null 2>&1; then
+  CURRENT_WS=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+fi
+
+if [[ "$JSON_OUTPUT" == "true" ]]; then
+  # Add active status to JSON output
+  jq 'to_entries | map({
+    workspace: .key,
+    port: .value.port,
+    repo: .value.repo,
+    branch: .value.branch,
+    started: .value.started
+  })' "$PORTS_FILE"
+else
+  # Table output
+  echo ""
+  printf "%-6s  %-20s  %-15s  %-6s  %s\n" "PORT" "REPO" "BRANCH" "STATUS" "WORKSPACE"
+  printf "%-6s  %-20s  %-15s  %-6s  %s\n" "----" "----" "------" "------" "---------"
+  
+  jq -r 'to_entries[] | "\(.value.port)\t\(.value.repo)\t\(.value.branch)\t\(.key)"' "$PORTS_FILE" | \
+  while IFS=$'\t' read -r port repo branch workspace; do
+    # Check status
+    if is_port_active "$port"; then
+      status="UP"
+    else
+      status="DOWN"
+    fi
+    
+    # Skip if filtering for active only
+    if [[ "$ACTIVE_ONLY" == "true" ]] && [[ "$status" != "UP" ]]; then
+      continue
+    fi
+    
+    # Highlight current workspace
+    if [[ "$workspace" == "$CURRENT_WS" ]]; then
+      marker="*"
+    else
+      marker=" "
+    fi
+    
+    # Truncate long paths
+    if [[ ${#workspace} -gt 50 ]]; then
+      display_ws="...${workspace: -47}"
+    else
+      display_ws="$workspace"
+    fi
+    
+    printf "%-6s  %-20s  %-15s  %-6s  %s%s\n" "$port" "$repo" "$branch" "$status" "$marker" "$display_ws"
+  done
+  
+  echo ""
+  echo "* = current directory"
+  echo ""
+  echo "Commands:"
+  echo "  dcgo <branch>       Navigate to clone (or open in VS Code)"
+  echo "  dcexec <cmd>        Execute command in current container"
+  echo "  dcdown              Stop current container"
+  echo "  dcdown --all        Stop all containers"
+  echo "  dcdown --prune      Remove stale entries"
+fi

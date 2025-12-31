@@ -1,0 +1,255 @@
+#!/usr/bin/env bash
+#
+# dctui - Interactive TUI for managing devcontainer instances
+#
+# Usage:
+#   dctui              # Launch interactive TUI
+#
+# Navigation:
+#   j/k or arrows      Move up/down
+#   Enter              Open selected instance (VS Code or cd)
+#   s                  Start new devcontainer (dcup)
+#   b                  Start devcontainer for a branch (dcup <branch>)
+#   x                  Stop selected instance (dcdown)
+#   X                  Stop all instances (dcdown --all)
+#   p                  Prune stale entries (dcdown --prune)
+#   r                  Refresh list
+#   q                  Quit
+#
+# Related commands:
+#   dcup     - Start devcontainer
+#   dcdown   - Stop devcontainer
+#   dclist   - List instances (non-interactive)
+#   dcgo     - Navigate to clone
+
+set -euo pipefail
+
+CACHE_DIR="${HOME}/.cache/devcontainer-multi"
+PORTS_FILE="${CACHE_DIR}/ports.json"
+CLONES_DIR="${HOME}/.cache/devcontainer-clones"
+
+# Check dependencies
+command -v jq >/dev/null 2>&1 || { echo "Error: jq is required"; exit 1; }
+
+# Detect if running in VS Code integrated terminal
+is_vscode_terminal() {
+  [[ -n "${TERM_PROGRAM:-}" ]] && [[ "$TERM_PROGRAM" == "vscode" ]]
+}
+
+# Check if port is active
+is_port_active() {
+  lsof -i ":$1" >/dev/null 2>&1
+}
+
+# Get current repo
+get_current_repo() {
+  if git rev-parse --git-dir >/dev/null 2>&1; then
+    basename "$(git rev-parse --show-toplevel)"
+  else
+    echo ""
+  fi
+}
+
+# Load instances into arrays
+load_instances() {
+  INSTANCES=()
+  PORTS=()
+  REPOS=()
+  BRANCHES=()
+  STATUSES=()
+  WORKSPACES=()
+  
+  [[ -f "$PORTS_FILE" ]] || return
+  
+  while IFS=$'\t' read -r port repo branch workspace; do
+    [[ -n "$port" ]] || continue
+    INSTANCES+=("$port|$repo|$branch")
+    PORTS+=("$port")
+    REPOS+=("$repo")
+    BRANCHES+=("$branch")
+    WORKSPACES+=("$workspace")
+    if is_port_active "$port"; then
+      STATUSES+=("UP")
+    else
+      STATUSES+=("DOWN")
+    fi
+  done < <(jq -r 'to_entries[] | "\(.value.port)\t\(.value.repo)\t\(.value.branch)\t\(.key)"' "$PORTS_FILE" 2>/dev/null)
+}
+
+# Draw the TUI
+draw_screen() {
+  clear
+  local rows=$(tput lines)
+  local cols=$(tput cols)
+  
+  # Header
+  echo -e "\033[1;36m devcontainer-multi \033[0m"
+  echo ""
+  
+  if [[ ${#INSTANCES[@]} -eq 0 ]]; then
+    echo "  No devcontainer instances tracked."
+    echo ""
+    echo "  Press 's' to start a devcontainer for current directory"
+    echo "  Press 'b' to start a devcontainer for a specific branch"
+  else
+    # Table header
+    printf "  \033[1m%-6s  %-18s  %-14s  %-6s\033[0m\n" "PORT" "REPO" "BRANCH" "STATUS"
+    printf "  %-6s  %-18s  %-14s  %-6s\n" "----" "------------------" "--------------" "------"
+    
+    # Instances
+    for i in "${!INSTANCES[@]}"; do
+      local prefix="  "
+      if [[ $i -eq $SELECTED ]]; then
+        prefix="\033[7m> "  # Inverted/highlighted
+      fi
+      
+      local status_color=""
+      if [[ "${STATUSES[$i]}" == "UP" ]]; then
+        status_color="\033[32m"  # Green
+      else
+        status_color="\033[31m"  # Red
+      fi
+      
+      printf "${prefix}%-6s  %-18s  %-14s  ${status_color}%-6s\033[0m\n" \
+        "${PORTS[$i]}" "${REPOS[$i]}" "${BRANCHES[$i]}" "${STATUSES[$i]}"
+      
+      [[ $i -eq $SELECTED ]] && printf "\033[0m"
+    done
+  fi
+  
+  # Footer
+  echo ""
+  echo -e "  \033[2m[s]tart  [b]ranch  [x]stop  [X]stop-all  [p]rune  [r]efresh  [q]uit\033[0m"
+  
+  if [[ ${#INSTANCES[@]} -gt 0 ]]; then
+    echo -e "  \033[2m[Enter] open in VS Code / print cd command\033[0m"
+  fi
+}
+
+# Handle opening a workspace
+open_workspace() {
+  local idx=$1
+  local workspace="${WORKSPACES[$idx]}"
+  
+  if is_vscode_terminal; then
+    code "$workspace"
+  else
+    clear
+    echo "To navigate to the workspace:"
+    echo ""
+    echo "  cd $workspace"
+    echo ""
+    echo "Press any key to continue..."
+    read -rsn1
+  fi
+}
+
+# Prompt for branch name
+prompt_branch() {
+  clear
+  echo "Enter branch name (or leave empty to cancel):"
+  echo ""
+  read -r branch
+  echo "$branch"
+}
+
+# Main loop
+main() {
+  # Initialize
+  SELECTED=0
+  load_instances
+  
+  # Hide cursor
+  tput civis
+  trap 'tput cnorm; clear' EXIT
+  
+  while true; do
+    draw_screen
+    
+    # Read single key
+    read -rsn1 key
+    
+    # Handle escape sequences (arrows)
+    if [[ "$key" == $'\x1b' ]]; then
+      read -rsn2 -t 0.1 key2 || true
+      key="${key}${key2}"
+    fi
+    
+    case "$key" in
+      q|Q)
+        break
+        ;;
+      j|$'\x1b[B')  # Down
+        if [[ ${#INSTANCES[@]} -gt 0 ]] && [[ $SELECTED -lt $((${#INSTANCES[@]} - 1)) ]]; then
+          ((SELECTED++))
+        fi
+        ;;
+      k|$'\x1b[A')  # Up
+        if [[ $SELECTED -gt 0 ]]; then
+          ((SELECTED--))
+        fi
+        ;;
+      $'\n'|$'\r')  # Enter
+        if [[ ${#INSTANCES[@]} -gt 0 ]]; then
+          open_workspace $SELECTED
+        fi
+        ;;
+      s|S)  # Start devcontainer for current directory
+        clear
+        tput cnorm
+        dcup || true
+        tput civis
+        load_instances
+        ;;
+      b|B)  # Start devcontainer for branch
+        tput cnorm
+        branch=$(prompt_branch)
+        if [[ -n "$branch" ]]; then
+          clear
+          dcup "$branch" || true
+        fi
+        tput civis
+        load_instances
+        ;;
+      x)  # Stop selected
+        if [[ ${#INSTANCES[@]} -gt 0 ]]; then
+          clear
+          tput cnorm
+          dcdown "${WORKSPACES[$SELECTED]}" || true
+          tput civis
+          load_instances
+          [[ $SELECTED -ge ${#INSTANCES[@]} ]] && SELECTED=$((${#INSTANCES[@]} - 1))
+          [[ $SELECTED -lt 0 ]] && SELECTED=0
+        fi
+        ;;
+      X)  # Stop all
+        clear
+        tput cnorm
+        dcdown --all || true
+        tput civis
+        load_instances
+        SELECTED=0
+        ;;
+      p|P)  # Prune
+        clear
+        tput cnorm
+        dcdown --prune || true
+        tput civis
+        load_instances
+        [[ $SELECTED -ge ${#INSTANCES[@]} ]] && SELECTED=$((${#INSTANCES[@]} - 1))
+        [[ $SELECTED -lt 0 ]] && SELECTED=0
+        ;;
+      r|R)  # Refresh
+        load_instances
+        ;;
+    esac
+  done
+}
+
+# Show help
+if [[ "${1:-}" == "--help" ]] || [[ "${1:-}" == "-h" ]]; then
+  sed -n '2,/^$/p' "$0" | sed 's/^# //' | sed 's/^#//'
+  exit 0
+fi
+
+main

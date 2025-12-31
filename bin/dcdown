@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+#
+# dcdown - Stop a devcontainer and release its port assignment
+#
+# Usage:
+#   dcdown              # Stop container for current directory
+#   dcdown <workspace>  # Stop container for specific workspace path
+#   dcdown --all        # Stop all tracked devcontainers
+#   dcdown --prune      # Remove stale port assignments (no running container)
+#
+# Options:
+#   --remove-clone      Also remove the clone directory (if applicable)
+#
+# Related commands:
+#   dcup     - Start devcontainer
+#   dclist   - List active instances
+
+set -euo pipefail
+
+CACHE_DIR="${HOME}/.cache/devcontainer-multi"
+PORTS_FILE="${CACHE_DIR}/ports.json"
+OVERRIDES_DIR="${CACHE_DIR}/overrides"
+
+log() { echo "[dcdown] $*"; }
+error() { echo "[dcdown] ERROR: $*" >&2; exit 1; }
+
+# Parse arguments first (for --help)
+WORKSPACE=""
+ALL=false
+PRUNE=false
+REMOVE_CLONE=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --all|-a)
+      ALL=true
+      shift
+      ;;
+    --prune|-p)
+      PRUNE=true
+      shift
+      ;;
+    --remove-clone|-c)
+      REMOVE_CLONE=true
+      shift
+      ;;
+    --help|-h)
+      sed -n '2,/^$/p' "$0" | sed 's/^# //' | sed 's/^#//'
+      exit 0
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      exit 1
+      ;;
+    *)
+      WORKSPACE="$1"
+      shift
+      ;;
+  esac
+done
+
+# Check for ports file after parsing args
+[[ -f "$PORTS_FILE" ]] || { echo "No active devcontainer instances found."; exit 0; }
+
+# Stop a single container
+stop_container() {
+  local ws="$1"
+  local info=$(jq -r --arg ws "$ws" '.[$ws] // empty' "$PORTS_FILE")
+  
+  if [[ -z "$info" ]]; then
+    log "No tracked instance for: $ws"
+    return 1
+  fi
+  
+  local port=$(echo "$info" | jq -r '.port')
+  local repo=$(echo "$info" | jq -r '.repo')
+  
+  log "Stopping container for $repo (port $port)..."
+  
+  # Generate workspace ID for override file
+  local ws_id=$(echo "$ws" | md5 -q 2>/dev/null || echo "$ws" | md5sum | cut -d' ' -f1)
+  local override_file="${OVERRIDES_DIR}/${ws_id}.json"
+  
+  # Try to stop via devcontainer CLI
+  if [[ -d "$ws" ]]; then
+    # Use the override config if it exists
+    if [[ -f "$override_file" ]]; then
+      devcontainer down --workspace-folder "$ws" --override-config "$override_file" 2>/dev/null || true
+    else
+      devcontainer down --workspace-folder "$ws" 2>/dev/null || true
+    fi
+  fi
+  
+  # Clean up override file
+  [[ -f "$override_file" ]] && rm -f "$override_file"
+  
+  # Remove port assignment
+  local tmp=$(mktemp)
+  jq --arg ws "$ws" 'del(.[$ws])' "$PORTS_FILE" > "$tmp" && mv "$tmp" "$PORTS_FILE"
+  
+  log "Stopped and released port $port"
+  
+  # Optionally remove clone
+  if [[ "$REMOVE_CLONE" == "true" ]]; then
+    # Check if this is in our clones directory
+    if [[ "$ws" == "${HOME}/.cache/devcontainer-clones/"* ]]; then
+      log "Removing clone: $ws"
+      rm -rf "$ws"
+    fi
+  fi
+}
+
+# Prune stale entries (no running container)
+prune_stale() {
+  log "Pruning stale port assignments..."
+  local pruned=0
+  
+  for ws in $(jq -r 'keys[]' "$PORTS_FILE"); do
+    local port=$(jq -r --arg ws "$ws" '.[$ws].port' "$PORTS_FILE")
+    
+    # Check if anything is listening on that port
+    if ! lsof -i ":$port" >/dev/null 2>&1; then
+      log "Removing stale assignment: $ws (port $port)"
+      local tmp=$(mktemp)
+      jq --arg ws "$ws" 'del(.[$ws])' "$PORTS_FILE" > "$tmp" && mv "$tmp" "$PORTS_FILE"
+      
+      # Clean up override file
+      local ws_id=$(echo "$ws" | md5 -q 2>/dev/null || echo "$ws" | md5sum | cut -d' ' -f1)
+      rm -f "${OVERRIDES_DIR}/${ws_id}.json"
+      
+      ((pruned++)) || true
+    fi
+  done
+  
+  log "Pruned $pruned stale assignments"
+}
+
+if [[ "$PRUNE" == "true" ]]; then
+  prune_stale
+  exit 0
+fi
+
+if [[ "$ALL" == "true" ]]; then
+  log "Stopping all tracked containers..."
+  for ws in $(jq -r 'keys[]' "$PORTS_FILE"); do
+    stop_container "$ws" || true
+  done
+  exit 0
+fi
+
+# Determine workspace
+if [[ -z "$WORKSPACE" ]]; then
+  # Try current directory
+  if git rev-parse --git-dir >/dev/null 2>&1; then
+    WORKSPACE=$(git rev-parse --show-toplevel)
+  else
+    WORKSPACE=$(pwd)
+  fi
+fi
+
+# Resolve to absolute path
+WORKSPACE=$(cd "$WORKSPACE" 2>/dev/null && pwd || echo "$WORKSPACE")
+
+stop_container "$WORKSPACE"
