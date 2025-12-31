@@ -34,11 +34,10 @@ test_dclist_shows_help() {
   assert_contains "$output" "dclist"
 }
 
-test_dclist_shows_empty_list() {
+test_dclist_shows_empty_message() {
   echo '{}' > "$TEST_CACHE_DIR/ports.json"
   local output=$("$BIN_DIR/dclist" 2>&1)
-  assert_contains "$output" "PORT"
-  assert_contains "$output" "REPO"
+  assert_contains "$output" "No devcontainer instances"
 }
 
 test_dclist_shows_registered_instance() {
@@ -92,7 +91,7 @@ echo "Command Usage Tests:"
 
 for test_func in \
   test_dclist_shows_help \
-  test_dclist_shows_empty_list \
+  test_dclist_shows_empty_message \
   test_dclist_shows_registered_instance \
   test_dclist_shows_multiple_instances
 do

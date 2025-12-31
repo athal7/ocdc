@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# dclist - List active devcontainer instances
+# dclist - List devcontainer instances and clones
 #
 # Usage:
-#   dclist           # List all tracked instances
+#   dclist           # List all tracked instances and orphaned clones
 #   dclist --json    # Output as JSON
 #   dclist --active  # Only show instances with running containers
 #
@@ -11,11 +11,13 @@
 #   dcup     - Start devcontainer
 #   dcdown   - Stop devcontainer
 #   dcgo     - Navigate to clone
+#   dcclean  - Clean up orphaned clones
 
 set -euo pipefail
 
 CACHE_DIR="${DCMULTI_CACHE_DIR:-${HOME}/.cache/devcontainer-multi}"
 PORTS_FILE="${CACHE_DIR}/ports.json"
+CLONES_DIR="${DCMULTI_CLONES_DIR:-${HOME}/.cache/devcontainer-clones}"
 
 # Parse arguments
 JSON_OUTPUT=false
@@ -42,12 +44,16 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Check for ports file after parsing args
-[[ -f "$PORTS_FILE" ]] || { echo "No devcontainer instances tracked."; exit 0; }
-
 # Check if port is actually in use
 is_port_active() {
   lsof -i ":$1" >/dev/null 2>&1
+}
+
+# Get tracked workspaces
+get_tracked_workspaces() {
+  if [[ -f "$PORTS_FILE" ]]; then
+    jq -r 'keys[]' "$PORTS_FILE" 2>/dev/null || true
+  fi
 }
 
 # Get current workspace for highlighting
@@ -57,58 +63,146 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
 fi
 
 if [[ "$JSON_OUTPUT" == "true" ]]; then
-  # Add active status to JSON output
-  jq 'to_entries | map({
-    workspace: .key,
-    port: .value.port,
-    repo: .value.repo,
-    branch: .value.branch,
-    started: .value.started
-  })' "$PORTS_FILE"
+  # Build combined JSON output
+  result="[]"
+  
+  # Add tracked containers
+  if [[ -f "$PORTS_FILE" ]]; then
+    tracked=$(jq 'to_entries | map({
+      type: "container",
+      workspace: .key,
+      port: .value.port,
+      repo: .value.repo,
+      branch: .value.branch,
+      started: .value.started
+    })' "$PORTS_FILE")
+    result=$(echo "$result" "$tracked" | jq -s 'add')
+  fi
+  
+  # Add orphaned clones
+  if [[ -d "$CLONES_DIR" ]] && [[ "$ACTIVE_ONLY" != "true" ]]; then
+    tracked_ws=$(get_tracked_workspaces)
+    for repo_dir in "$CLONES_DIR"/*/; do
+      [[ -d "$repo_dir" ]] || continue
+      repo_name=$(basename "$repo_dir")
+      
+      for clone_dir in "$repo_dir"*/; do
+        [[ -d "$clone_dir" ]] || continue
+        clone_dir="${clone_dir%/}"
+        
+        if ! echo "$tracked_ws" | grep -qFx "$clone_dir"; then
+          branch_name=$(basename "$clone_dir")
+          orphan=$(jq -n --arg ws "$clone_dir" --arg repo "$repo_name" --arg branch "$branch_name" '{
+            type: "orphan",
+            workspace: $ws,
+            port: null,
+            repo: $repo,
+            branch: $branch,
+            started: null
+          }')
+          result=$(echo "$result" "[$orphan]" | jq -s 'add')
+        fi
+      done
+    done
+  fi
+  
+  echo "$result"
 else
   # Table output
-  echo ""
-  printf "%-6s  %-20s  %-15s  %-6s  %s\n" "PORT" "REPO" "BRANCH" "STATUS" "WORKSPACE"
-  printf "%-6s  %-20s  %-15s  %-6s  %s\n" "----" "----" "------" "------" "---------"
+  has_output=false
   
-  jq -r 'to_entries[] | "\(.value.port)\t\(.value.repo)\t\(.value.branch)\t\(.key)"' "$PORTS_FILE" | \
-  while IFS=$'\t' read -r port repo branch workspace; do
-    # Check status
-    if is_port_active "$port"; then
-      status="UP"
-    else
-      status="DOWN"
-    fi
+  # Tracked containers
+  if [[ -f "$PORTS_FILE" ]] && [[ $(jq 'length' "$PORTS_FILE") -gt 0 ]]; then
+    echo ""
+    printf "%-6s  %-20s  %-16s  %-8s  %s\n" "PORT" "REPO" "BRANCH" "STATUS" "WORKSPACE"
+    printf "%-6s  %-20s  %-16s  %-8s  %s\n" "──────" "────────────────────" "────────────────" "────────" "─────────"
     
-    # Skip if filtering for active only
-    if [[ "$ACTIVE_ONLY" == "true" ]] && [[ "$status" != "UP" ]]; then
-      continue
-    fi
+    jq -r 'to_entries[] | "\(.value.port)\t\(.value.repo)\t\(.value.branch)\t\(.key)"' "$PORTS_FILE" | \
+    while IFS=$'\t' read -r port repo branch workspace; do
+      # Check status
+      if is_port_active "$port"; then
+        status="\033[32mUP\033[0m    "
+      else
+        status="\033[31mDOWN\033[0m  "
+      fi
+      
+      # Skip if filtering for active only
+      if [[ "$ACTIVE_ONLY" == "true" ]]; then
+        is_port_active "$port" || continue
+      fi
+      
+      # Highlight current workspace
+      if [[ "$workspace" == "$CURRENT_WS" ]]; then
+        marker="* "
+      else
+        marker="  "
+      fi
+      
+      # Truncate long paths
+      if [[ ${#workspace} -gt 40 ]]; then
+        display_ws="...${workspace: -37}"
+      else
+        display_ws="$workspace"
+      fi
+      
+      printf "%-6s  %-20s  %-16s  ${status}  %s%s\n" "$port" "$repo" "$branch" "$marker" "$display_ws"
+    done
+    has_output=true
+  fi
+  
+  # Orphaned clones (skip if --active)
+  if [[ "$ACTIVE_ONLY" != "true" ]] && [[ -d "$CLONES_DIR" ]]; then
+    tracked_ws=$(get_tracked_workspaces)
+    orphans=""
     
-    # Highlight current workspace
-    if [[ "$workspace" == "$CURRENT_WS" ]]; then
-      marker="*"
-    else
-      marker=" "
-    fi
+    for repo_dir in "$CLONES_DIR"/*/; do
+      [[ -d "$repo_dir" ]] || continue
+      repo_name=$(basename "$repo_dir")
+      
+      for clone_dir in "$repo_dir"*/; do
+        [[ -d "$clone_dir" ]] || continue
+        clone_dir="${clone_dir%/}"
+        
+        if ! echo "$tracked_ws" | grep -qFx "$clone_dir"; then
+          branch_name=$(basename "$clone_dir")
+          orphans="${orphans}${repo_name}\t${branch_name}\t${clone_dir}\n"
+        fi
+      done
+    done
     
-    # Truncate long paths
-    if [[ ${#workspace} -gt 50 ]]; then
-      display_ws="...${workspace: -47}"
-    else
-      display_ws="$workspace"
+    if [[ -n "$orphans" ]]; then
+      echo ""
+      echo "Orphaned clones (no tracked container):"
+      printf "%-6s  %-20s  %-16s  %-8s  %s\n" "PORT" "REPO" "BRANCH" "STATUS" "WORKSPACE"
+      printf "%-6s  %-20s  %-16s  %-8s  %s\n" "──────" "────────────────────" "────────────────" "────────" "─────────"
+      
+      echo -e "$orphans" | while IFS=$'\t' read -r repo branch workspace; do
+        [[ -n "$repo" ]] || continue
+        
+        if [[ ${#workspace} -gt 40 ]]; then
+          display_ws="...${workspace: -37}"
+        else
+          display_ws="$workspace"
+        fi
+        
+        printf "%-6s  %-20s  %-16s  \033[33mORPHAN\033[0m  %s\n" "-" "$repo" "$branch" "$display_ws"
+      done
+      has_output=true
     fi
-    
-    printf "%-6s  %-20s  %-15s  %-6s  %s%s\n" "$port" "$repo" "$branch" "$status" "$marker" "$display_ws"
-  done
+  fi
+  
+  if [[ "$has_output" != "true" ]]; then
+    echo "No devcontainer instances or clones found."
+    exit 0
+  fi
   
   echo ""
   echo "* = current directory"
   echo ""
   echo "Commands:"
-  echo "  dcgo <branch>       Navigate to clone (or open in VS Code)"
-  echo "  dcexec <cmd>        Execute command in current container"
+  echo "  dcgo <branch>       Navigate to clone"
+  echo "  dcexec <cmd>        Execute command in container"
   echo "  dcdown              Stop current container"
-  echo "  dcdown --all        Stop all containers"
-  echo "  dcdown --prune      Remove stale entries"
+  echo "  dcclean             Clean up orphaned clones"
+  echo "  dctui               Interactive TUI"
 fi

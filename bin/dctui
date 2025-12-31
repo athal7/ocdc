@@ -6,30 +6,39 @@
 #   dctui              # Launch interactive TUI
 #
 # Navigation:
-#   j/k or arrows      Move up/down
-#   Enter              Open selected instance (VS Code or cd)
-#   s                  Start new devcontainer (dcup)
-#   b                  Start devcontainer for a branch (dcup <branch>)
-#   x                  Stop selected instance (dcdown)
-#   X                  Stop all instances (dcdown --all)
-#   p                  Prune stale entries (dcdown --prune)
+#   ↑/↓ or j/k         Move selection up/down
+#   Enter              Open/start selected instance
+#   n                  New devcontainer (prompts for branch)
+#   d                  Stop selected (with option to remove clone)
+#   D                  Stop all instances
 #   r                  Refresh list
 #   q                  Quit
 #
 # Related commands:
 #   dcup     - Start devcontainer
-#   dcdown   - Stop devcontainer
+#   dcdown   - Stop devcontainer  
 #   dclist   - List instances (non-interactive)
-#   dcgo     - Navigate to clone
+#   dcclean  - Clean up orphaned clones
 
 set -euo pipefail
 
-CACHE_DIR="${HOME}/.cache/devcontainer-multi"
+CACHE_DIR="${DCMULTI_CACHE_DIR:-${HOME}/.cache/devcontainer-multi}"
 PORTS_FILE="${CACHE_DIR}/ports.json"
-CLONES_DIR="${HOME}/.cache/devcontainer-clones"
+CLONES_DIR="${DCMULTI_CLONES_DIR:-${HOME}/.cache/devcontainer-clones}"
 
 # Check dependencies
 command -v jq >/dev/null 2>&1 || { echo "Error: jq is required"; exit 1; }
+
+# Colors and styles
+BOLD='\033[1m'
+DIM='\033[2m'
+RESET='\033[0m'
+CYAN='\033[36m'
+GREEN='\033[32m'
+RED='\033[31m'
+YELLOW='\033[33m'
+BG_BLUE='\033[44m'
+BG_RESET='\033[49m'
 
 # Detect if running in VS Code integrated terminal
 is_vscode_terminal() {
@@ -41,121 +50,261 @@ is_port_active() {
   lsof -i ":$1" >/dev/null 2>&1
 }
 
-# Get current repo
-get_current_repo() {
-  if git rev-parse --git-dir >/dev/null 2>&1; then
-    basename "$(git rev-parse --show-toplevel)"
-  else
-    echo ""
+# Get tracked workspaces
+get_tracked_workspaces() {
+  if [[ -f "$PORTS_FILE" ]]; then
+    jq -r 'keys[]' "$PORTS_FILE" 2>/dev/null || true
   fi
 }
 
-# Load instances into arrays
+# Load all instances (tracked containers + orphaned clones)
 load_instances() {
-  INSTANCES=()
+  TYPES=()        # "container" or "orphan"
   PORTS=()
   REPOS=()
   BRANCHES=()
   STATUSES=()
   WORKSPACES=()
   
-  [[ -f "$PORTS_FILE" ]] || return
+  # Load tracked containers from ports.json
+  if [[ -f "$PORTS_FILE" ]]; then
+    while IFS=$'\t' read -r port repo branch workspace; do
+      [[ -n "$port" ]] || continue
+      TYPES+=("container")
+      PORTS+=("$port")
+      REPOS+=("$repo")
+      BRANCHES+=("$branch")
+      WORKSPACES+=("$workspace")
+      if is_port_active "$port"; then
+        STATUSES+=("UP")
+      else
+        STATUSES+=("DOWN")
+      fi
+    done < <(jq -r 'to_entries[] | "\(.value.port)\t\(.value.repo)\t\(.value.branch)\t\(.key)"' "$PORTS_FILE" 2>/dev/null)
+  fi
   
-  while IFS=$'\t' read -r port repo branch workspace; do
-    [[ -n "$port" ]] || continue
-    INSTANCES+=("$port|$repo|$branch")
-    PORTS+=("$port")
-    REPOS+=("$repo")
-    BRANCHES+=("$branch")
-    WORKSPACES+=("$workspace")
-    if is_port_active "$port"; then
-      STATUSES+=("UP")
-    else
-      STATUSES+=("DOWN")
-    fi
-  done < <(jq -r 'to_entries[] | "\(.value.port)\t\(.value.repo)\t\(.value.branch)\t\(.key)"' "$PORTS_FILE" 2>/dev/null)
+  # Load orphaned clones (exist on disk but not tracked)
+  local tracked
+  tracked=$(get_tracked_workspaces)
+  
+  if [[ -d "$CLONES_DIR" ]]; then
+    for repo_dir in "$CLONES_DIR"/*/; do
+      [[ -d "$repo_dir" ]] || continue
+      local repo_name=$(basename "$repo_dir")
+      
+      for clone_dir in "$repo_dir"*/; do
+        [[ -d "$clone_dir" ]] || continue
+        clone_dir="${clone_dir%/}"
+        
+        # Skip if tracked
+        if echo "$tracked" | grep -qFx "$clone_dir"; then
+          continue
+        fi
+        
+        local branch_name=$(basename "$clone_dir")
+        TYPES+=("orphan")
+        PORTS+=("-")
+        REPOS+=("$repo_name")
+        BRANCHES+=("$branch_name")
+        STATUSES+=("ORPHAN")
+        WORKSPACES+=("$clone_dir")
+      done
+    done
+  fi
 }
 
 # Draw the TUI
 draw_screen() {
   clear
-  local rows=$(tput lines)
   local cols=$(tput cols)
   
   # Header
-  echo -e "\033[1;36m devcontainer-multi \033[0m"
+  echo -e "${BOLD}${CYAN}╭─ devcontainer-multi ─╮${RESET}"
   echo ""
   
-  if [[ ${#INSTANCES[@]} -eq 0 ]]; then
-    echo "  No devcontainer instances tracked."
+  if [[ ${#TYPES[@]} -eq 0 ]]; then
+    echo "  No devcontainer instances or clones found."
     echo ""
-    echo "  Press 's' to start a devcontainer for current directory"
-    echo "  Press 'b' to start a devcontainer for a specific branch"
+    echo -e "  ${DIM}Press${RESET} ${BOLD}n${RESET} ${DIM}to create a new devcontainer${RESET}"
   else
     # Table header
-    printf "  \033[1m%-6s  %-18s  %-14s  %-6s\033[0m\n" "PORT" "REPO" "BRANCH" "STATUS"
-    printf "  %-6s  %-18s  %-14s  %-6s\n" "----" "------------------" "--------------" "------"
+    printf "  ${BOLD}%-6s  %-20s  %-16s  %-8s${RESET}\n" "PORT" "REPO" "BRANCH" "STATUS"
+    printf "  ${DIM}%-6s  %-20s  %-16s  %-8s${RESET}\n" "──────" "────────────────────" "────────────────" "────────"
     
     # Instances
-    for i in "${!INSTANCES[@]}"; do
+    for i in "${!TYPES[@]}"; do
       local prefix="  "
+      local suffix=""
+      
+      # Highlight selected row
       if [[ $i -eq $SELECTED ]]; then
-        prefix="\033[7m> "  # Inverted/highlighted
+        prefix="${BG_BLUE}${BOLD}▸ "
+        suffix="${RESET}"
       fi
       
+      # Status color
       local status_color=""
-      if [[ "${STATUSES[$i]}" == "UP" ]]; then
-        status_color="\033[32m"  # Green
-      else
-        status_color="\033[31m"  # Red
-      fi
+      case "${STATUSES[$i]}" in
+        UP)     status_color="${GREEN}" ;;
+        DOWN)   status_color="${RED}" ;;
+        ORPHAN) status_color="${YELLOW}" ;;
+      esac
       
-      printf "${prefix}%-6s  %-18s  %-14s  ${status_color}%-6s\033[0m\n" \
-        "${PORTS[$i]}" "${REPOS[$i]}" "${BRANCHES[$i]}" "${STATUSES[$i]}"
+      # Truncate long values
+      local repo="${REPOS[$i]}"
+      local branch="${BRANCHES[$i]}"
+      [[ ${#repo} -gt 20 ]] && repo="${repo:0:17}..."
+      [[ ${#branch} -gt 16 ]] && branch="${branch:0:13}..."
       
-      [[ $i -eq $SELECTED ]] && printf "\033[0m"
+      printf "${prefix}%-6s  %-20s  %-16s  ${status_color}%-8s${RESET}${suffix}\n" \
+        "${PORTS[$i]}" "$repo" "$branch" "${STATUSES[$i]}"
     done
+    
+    # Show workspace path for selected item
+    echo ""
+    echo -e "  ${DIM}Path: ${WORKSPACES[$SELECTED]}${RESET}"
   fi
   
-  # Footer
+  # Footer with keybindings
   echo ""
-  echo -e "  \033[2m[s]tart  [b]ranch  [x]stop  [X]stop-all  [p]rune  [r]efresh  [q]uit\033[0m"
+  echo -e "  ${DIM}────────────────────────────────────────${RESET}"
+  echo -e "  ${BOLD}n${RESET}${DIM}ew${RESET}  ${BOLD}d${RESET}${DIM}elete${RESET}  ${BOLD}D${RESET}${DIM}elete-all${RESET}  ${BOLD}r${RESET}${DIM}efresh${RESET}  ${BOLD}q${RESET}${DIM}uit${RESET}"
   
-  if [[ ${#INSTANCES[@]} -gt 0 ]]; then
-    echo -e "  \033[2m[Enter] open in VS Code / print cd command\033[0m"
+  if [[ ${#TYPES[@]} -gt 0 ]]; then
+    local status="${STATUSES[$SELECTED]}"
+    if [[ "$status" == "UP" ]]; then
+      echo -e "  ${DIM}↑/↓ navigate  Enter=open in VS Code${RESET}"
+    elif [[ "$status" == "DOWN" ]]; then
+      echo -e "  ${DIM}↑/↓ navigate  Enter=start container${RESET}"
+    else
+      echo -e "  ${DIM}↑/↓ navigate  Enter=open directory${RESET}"
+    fi
   fi
 }
 
-# Handle opening a workspace
+# Show confirmation dialog
+confirm() {
+  local message="$1"
+  local default="${2:-n}"
+  
+  echo ""
+  if [[ "$default" == "y" ]]; then
+    echo -ne "  ${message} [Y/n] "
+  else
+    echo -ne "  ${message} [y/N] "
+  fi
+  
+  read -rsn1 reply
+  echo ""
+  
+  case "$reply" in
+    y|Y) return 0 ;;
+    n|N) return 1 ;;
+    "")  [[ "$default" == "y" ]] && return 0 || return 1 ;;
+    *)   return 1 ;;
+  esac
+}
+
+# Handle opening/starting a workspace
 open_workspace() {
   local idx=$1
   local workspace="${WORKSPACES[$idx]}"
+  local status="${STATUSES[$idx]}"
   
+  # If container is DOWN, start it first then open
+  if [[ "$status" == "DOWN" ]]; then
+    clear
+    tput cnorm
+    echo "Starting container for ${REPOS[$idx]}/${BRANCHES[$idx]}..."
+    echo ""
+    (cd "$workspace" && dcup --no-open) 2>&1 || true
+    load_instances
+    tput civis
+    # Fall through to open it
+  fi
+  
+  # Open in VS Code or show cd command
   if is_vscode_terminal; then
     code "$workspace"
   else
     clear
     echo "To navigate to the workspace:"
     echo ""
-    echo "  cd $workspace"
+    echo -e "  ${BOLD}cd $workspace${RESET}"
     echo ""
     echo "Press any key to continue..."
     read -rsn1
   fi
 }
 
+# Stop a container with option to remove clone
+stop_instance() {
+  local idx=$1
+  local workspace="${WORKSPACES[$idx]}"
+  local type="${TYPES[$idx]}"
+  local repo="${REPOS[$idx]}"
+  local branch="${BRANCHES[$idx]}"
+  
+  clear
+  tput cnorm
+  
+  if [[ "$type" == "orphan" ]]; then
+    # Orphan - just offer to remove the clone
+    echo -e "Remove orphaned clone ${BOLD}${repo}/${branch}${RESET}?"
+    echo -e "${DIM}Path: ${workspace}${RESET}"
+    echo ""
+    if confirm "Remove clone directory?"; then
+      rm -rf "$workspace"
+      # Clean up empty parent
+      local parent=$(dirname "$workspace")
+      [[ -d "$parent" ]] && [[ -z "$(ls -A "$parent")" ]] && rmdir "$parent" 2>/dev/null || true
+      echo "  Removed."
+    else
+      echo "  Cancelled."
+    fi
+  else
+    # Container - stop it and optionally remove clone
+    echo -e "Stopping ${BOLD}${repo}/${branch}${RESET} (port ${PORTS[$idx]})..."
+    dcdown "$workspace" 2>&1 || true
+    
+    # If it's a clone, offer to remove it
+    if [[ "$workspace" == "$CLONES_DIR"* ]]; then
+      echo ""
+      if confirm "Also remove the clone directory?"; then
+        rm -rf "$workspace"
+        local parent=$(dirname "$workspace")
+        [[ -d "$parent" ]] && [[ -z "$(ls -A "$parent")" ]] && rmdir "$parent" 2>/dev/null || true
+        echo "  Clone removed."
+      fi
+    fi
+  fi
+  
+  echo ""
+  echo "Press any key to continue..."
+  read -rsn1
+  tput civis
+}
+
 # Prompt for branch name
 prompt_branch() {
-  clear
-  echo "Enter branch name (or leave empty to cancel):"
-  echo ""
+  clear >&2
+  tput cnorm >&2
+  echo "" >&2
+  echo "  ╭─────────────────────────────────────────╮" >&2
+  echo "  │         Start devcontainer             │" >&2
+  echo "  ├─────────────────────────────────────────┤" >&2
+  echo "  │  Enter a branch name to create a clone │" >&2
+  echo "  │  or press Enter for current directory  │" >&2
+  echo "  ╰─────────────────────────────────────────╯" >&2
+  echo "" >&2
+  echo -n "  Branch: " >&2
   read -r branch
+  tput civis >&2
   echo "$branch"
 }
 
 # Main loop
 main() {
-  # Initialize
   SELECTED=0
   load_instances
   
@@ -179,68 +328,94 @@ main() {
       q|Q)
         break
         ;;
-      j|$'\x1b[B')  # Down
-        if [[ ${#INSTANCES[@]} -gt 0 ]] && [[ $SELECTED -lt $((${#INSTANCES[@]} - 1)) ]]; then
-          ((SELECTED++))
+      
+      # Navigation - down
+      j|$'\x1b[B')
+        if [[ ${#TYPES[@]} -gt 0 ]] && [[ $SELECTED -lt $((${#TYPES[@]} - 1)) ]]; then
+          SELECTED=$((SELECTED + 1))
         fi
         ;;
-      k|$'\x1b[A')  # Up
+      
+      # Navigation - up  
+      k|$'\x1b[A')
         if [[ $SELECTED -gt 0 ]]; then
-          ((SELECTED--))
+          SELECTED=$((SELECTED - 1))
         fi
         ;;
-      $'\n'|$'\r')  # Enter
-        if [[ ${#INSTANCES[@]} -gt 0 ]]; then
+      
+      # Open workspace
+      ''|$'\n')
+        if [[ ${#TYPES[@]} -gt 0 ]]; then
           open_workspace $SELECTED
         fi
         ;;
-      s|S)  # Start devcontainer for current directory
+      
+      # New devcontainer (prompt for branch)
+      n|N)
+        branch=$(prompt_branch)
         clear
         tput cnorm
-        dcup || true
-        tput civis
-        load_instances
-        ;;
-      b|B)  # Start devcontainer for branch
-        tput cnorm
-        branch=$(prompt_branch)
+        
         if [[ -n "$branch" ]]; then
-          clear
-          dcup "$branch" || true
+          # Check if this branch already exists in the list
+          local found_idx=-1
+          for i in "${!BRANCHES[@]}"; do
+            if [[ "${BRANCHES[$i]}" == "$branch" ]]; then
+              found_idx=$i
+              break
+            fi
+          done
+          
+          if [[ $found_idx -ge 0 ]]; then
+            echo "Branch '$branch' already exists - opening it..."
+            sleep 1
+            tput civis
+            open_workspace $found_idx
+            load_instances
+            continue
+          fi
+          
+          dcup "$branch" --no-open || true
+        else
+          dcup --no-open || true
         fi
+        echo ""
+        echo "Press any key to continue..."
+        read -rsn1
         tput civis
         load_instances
         ;;
-      x)  # Stop selected
-        if [[ ${#INSTANCES[@]} -gt 0 ]]; then
-          clear
-          tput cnorm
-          dcdown "${WORKSPACES[$SELECTED]}" || true
-          tput civis
+      
+      # Stop/delete selected
+      d|x)
+        if [[ ${#TYPES[@]} -gt 0 ]]; then
+          stop_instance $SELECTED
           load_instances
-          [[ $SELECTED -ge ${#INSTANCES[@]} ]] && SELECTED=$((${#INSTANCES[@]} - 1))
+          [[ $SELECTED -ge ${#TYPES[@]} ]] && SELECTED=$((${#TYPES[@]} - 1))
           [[ $SELECTED -lt 0 ]] && SELECTED=0
         fi
         ;;
-      X)  # Stop all
+      
+      # Stop all
+      D|X)
         clear
         tput cnorm
-        dcdown --all || true
+        if confirm "Stop ALL containers?"; then
+          dcdown --all || true
+        fi
+        echo ""
+        echo "Press any key to continue..."
+        read -rsn1
         tput civis
         load_instances
         SELECTED=0
         ;;
-      p|P)  # Prune
-        clear
-        tput cnorm
-        dcdown --prune || true
-        tput civis
+      
+      # Refresh
+      r|R)
         load_instances
-        [[ $SELECTED -ge ${#INSTANCES[@]} ]] && SELECTED=$((${#INSTANCES[@]} - 1))
+        [[ $SELECTED -ge ${#TYPES[@]} ]] && SELECTED=$((${#TYPES[@]} - 1))
         [[ $SELECTED -lt 0 ]] && SELECTED=0
-        ;;
-      r|R)  # Refresh
-        load_instances
         ;;
     esac
   done

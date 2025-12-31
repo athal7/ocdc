@@ -78,7 +78,7 @@ dcgo
 ### Manage instances
 
 ```bash
-# List all instances
+# List all instances and orphaned clones
 dclist
 
 # Stop current instance
@@ -108,14 +108,13 @@ dcexec npm test
 dctui
 ```
 
-Navigation:
-- `j/k` or arrows: Move up/down
-- `Enter`: Open selected instance
-- `s`: Start devcontainer for current directory
-- `b`: Start devcontainer for a branch
-- `x`: Stop selected instance
-- `X`: Stop all instances
-- `p`: Prune stale entries
+The TUI shows both tracked containers and orphaned clones. Navigation:
+
+- `↑/↓` or `j/k`: Move selection
+- `Enter`: Open/start selected instance
+- `n`: New devcontainer (prompts for branch)
+- `d`: Stop/delete selected (with option to remove clone)
+- `D`: Stop all instances
 - `r`: Refresh
 - `q`: Quit
 
@@ -132,7 +131,7 @@ Create `~/.config/devcontainer-multi/config.json`:
 
 ## How it works
 
-1. **Clone-based isolation**: When you run `dcup feature-x`, it creates a shallow clone at `~/.cache/devcontainer-clones/myapp/feature-x/`. Clones use `--reference` and `--dissociate` to share git objects with your main repo, saving disk space while remaining fully independent.
+1. **Clone-based isolation**: When you run `dcup feature-x`, it creates a shallow clone at `~/.cache/devcontainer-clones/myapp/feature-x/`. Clones use `--reference` and `--dissociate` to share git objects with your main repo, saving disk space while remaining fully independent. Gitignored files (secrets, `.env`, keys) under 100KB are automatically copied to the clone.
 
 2. **Port override**: The tool generates an ephemeral override file that sets a unique port mapping:
    ```json
