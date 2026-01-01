@@ -1,0 +1,4 @@
+fileignoreconfig:
+- filename: test/test_plugin.bash
+  checksum: ec7393d0874adfea8622aa41a922aa67b873f433405e007d72ac9aa7b2adb3a6
+version: "1.0"

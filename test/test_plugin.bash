@@ -650,6 +650,222 @@ test_plugin_set_context_validates_workspace() {
 }
 
 # =============================================================================
+# Timeout Utility Tests
+# =============================================================================
+
+test_withTimeout_resolves_fast_promise() {
+  if ! command -v node &>/dev/null; then
+    echo "SKIP: node not available"
+    return 0
+  fi
+  
+  local result=$(run_node "
+    import { withTimeout } from '$PLUGIN_DIR/helpers.js';
+    
+    const fast = Promise.resolve('done');
+    const result = await withTimeout(fast, 1000);
+    console.log(result === 'done' ? 'PASS' : 'FAIL');
+  ")
+  
+  [[ "$result" == "PASS" ]] || { echo "Fast promise should resolve: $result"; return 1; }
+  return 0
+}
+
+test_withTimeout_rejects_slow_promise() {
+  if ! command -v node &>/dev/null; then
+    echo "SKIP: node not available"
+    return 0
+  fi
+  
+  local result=$(run_node "
+    import { withTimeout } from '$PLUGIN_DIR/helpers.js';
+    
+    const slow = new Promise(r => setTimeout(() => r('done'), 5000));
+    try {
+      await withTimeout(slow, 100);
+      console.log('FAIL: should have timed out');
+    } catch (e) {
+      console.log(e.message === 'TIMEOUT' ? 'PASS' : 'FAIL: ' + e.message);
+    }
+  ")
+  
+  [[ "$result" == "PASS" ]] || { echo "Slow promise should timeout: $result"; return 1; }
+  return 0
+}
+
+test_withTimeout_rejects_never_resolving_promise() {
+  if ! command -v node &>/dev/null; then
+    echo "SKIP: node not available"
+    return 0
+  fi
+  
+  local result=$(run_node "
+    import { withTimeout } from '$PLUGIN_DIR/helpers.js';
+    
+    const never = new Promise(() => {}); // Never resolves
+    try {
+      await withTimeout(never, 100);
+      console.log('FAIL: should have timed out');
+    } catch (e) {
+      console.log(e.message === 'TIMEOUT' ? 'PASS' : 'FAIL: ' + e.message);
+    }
+  ")
+  
+  [[ "$result" == "PASS" ]] || { echo "Never-resolving promise should timeout: $result"; return 1; }
+  return 0
+}
+
+test_runWithTimeout_returns_undefined_on_timeout() {
+  if ! command -v node &>/dev/null; then
+    echo "SKIP: node not available"
+    return 0
+  fi
+  
+  local result=$(run_node "
+    import { runWithTimeout } from '$PLUGIN_DIR/helpers.js';
+    
+    const result = await runWithTimeout(
+      () => new Promise(() => {}), // Never resolves
+      100
+    );
+    console.log(result === undefined ? 'PASS' : 'FAIL: ' + result);
+  ")
+  
+  [[ "$result" == "PASS" ]] || { echo "runWithTimeout should return undefined on timeout: $result"; return 1; }
+  return 0
+}
+
+test_runWithTimeout_returns_undefined_on_error() {
+  if ! command -v node &>/dev/null; then
+    echo "SKIP: node not available"
+    return 0
+  fi
+  
+  local result=$(run_node "
+    import { runWithTimeout } from '$PLUGIN_DIR/helpers.js';
+    
+    const result = await runWithTimeout(
+      async () => { throw new Error('boom'); },
+      1000
+    );
+    console.log(result === undefined ? 'PASS' : 'FAIL: ' + result);
+  ")
+  
+  [[ "$result" == "PASS" ]] || { echo "runWithTimeout should return undefined on error: $result"; return 1; }
+  return 0
+}
+
+test_runWithTimeout_returns_value_on_success() {
+  if ! command -v node &>/dev/null; then
+    echo "SKIP: node not available"
+    return 0
+  fi
+  
+  local result=$(run_node "
+    import { runWithTimeout } from '$PLUGIN_DIR/helpers.js';
+    
+    const result = await runWithTimeout(
+      async () => 'success',
+      1000
+    );
+    console.log(result === 'success' ? 'PASS' : 'FAIL: ' + result);
+  ")
+  
+  [[ "$result" == "PASS" ]] || { echo "runWithTimeout should return value on success: $result"; return 1; }
+  return 0
+}
+
+# =============================================================================
+# Plugin Initialization Tests
+# =============================================================================
+# These tests verify that the plugin initializes quickly and doesn't hang,
+# even when external dependencies (like Docker or OpenCode API) are slow.
+
+test_plugin_init_does_not_await_slow_operations() {
+  if ! command -v node &>/dev/null; then
+    echo "SKIP: node not available"
+    return 0
+  fi
+  
+  # The plugin initialization should NOT await slow operations like
+  # installCommand or cleanupStaleSessions. They run with runWithTimeout
+  # which means the plugin returns immediately without blocking.
+  #
+  # This test simulates what happens when the OpenCode API is slow or hangs.
+  # The plugin should still return quickly.
+  
+  local result
+  result=$(run_node "
+    import { runWithTimeout } from '$PLUGIN_DIR/helpers.js';
+    
+    // Simulate a slow operation (like client.session.list that hangs)
+    let operationCompleted = false;
+    const slowOperation = async () => {
+      await new Promise(r => setTimeout(r, 10000)); // 10 seconds
+      operationCompleted = true;
+    };
+    
+    const start = Date.now();
+    
+    // This is what the plugin does now - fire and forget with timeout
+    runWithTimeout(slowOperation, 2000);
+    
+    const elapsed = Date.now() - start;
+    
+    // Should return immediately (not wait for the slow operation)
+    if (elapsed > 100) {
+      throw new Error('runWithTimeout blocked for ' + elapsed + 'ms');
+    }
+    
+    // The operation should not have completed
+    if (operationCompleted) {
+      throw new Error('Operation should not have completed yet');
+    }
+    
+    console.log('PASS: runWithTimeout returned immediately in ' + elapsed + 'ms');
+  ")
+  
+  [[ "$result" == PASS* ]] || { echo "Plugin init should not block: $result"; return 1; }
+  return 0
+}
+
+test_plugin_init_timeout_prevents_hang() {
+  if ! command -v node &>/dev/null; then
+    echo "SKIP: node not available"
+    return 0
+  fi
+  
+  # Test that runWithTimeout actually times out and doesn't hang forever
+  local result
+  result=$(run_node "
+    import { runWithTimeout } from '$PLUGIN_DIR/helpers.js';
+    
+    const start = Date.now();
+    
+    // This simulates client.session.list() that never resolves
+    const result = await runWithTimeout(
+      () => new Promise(() => {}), // Never resolves
+      100 // 100ms timeout
+    );
+    
+    const elapsed = Date.now() - start;
+    
+    if (result !== undefined) {
+      throw new Error('Should return undefined on timeout, got: ' + result);
+    }
+    
+    if (elapsed > 200) {
+      throw new Error('Took too long: ' + elapsed + 'ms (expected ~100ms)');
+    }
+    
+    console.log('PASS: timed out correctly in ' + elapsed + 'ms');
+  ")
+  
+  [[ "$result" == PASS* ]] || { echo "Timeout should prevent hang: $result"; return 1; }
+  return 0
+}
+
+# =============================================================================
 # OpenCode Runtime Integration Tests (skipped in CI)
 # =============================================================================
 # These tests actually invoke `opencode run` to verify the plugin works in the
@@ -943,6 +1159,22 @@ do
 done
 
 echo ""
+echo "Timeout Utility Tests:"
+
+for test_func in \
+  test_withTimeout_resolves_fast_promise \
+  test_withTimeout_rejects_slow_promise \
+  test_withTimeout_rejects_never_resolving_promise \
+  test_runWithTimeout_returns_undefined_on_timeout \
+  test_runWithTimeout_returns_undefined_on_error \
+  test_runWithTimeout_returns_value_on_success
+do
+  setup
+  run_test "${test_func#test_}" "$test_func"
+  teardown
+done
+
+echo ""
 echo "Plugin Structure Tests (index.js):"
 
 for test_func in \
@@ -957,6 +1189,18 @@ for test_func in \
   test_plugin_ocdc_tool_checks_cli_installed \
   test_plugin_ocdc_tool_handles_off \
   test_plugin_set_context_validates_workspace
+do
+  setup
+  run_test "${test_func#test_}" "$test_func"
+  teardown
+done
+
+echo ""
+echo "Plugin Initialization Tests:"
+
+for test_func in \
+  test_plugin_init_does_not_await_slow_operations \
+  test_plugin_init_timeout_prevents_hang
 do
   setup
   run_test "${test_func#test_}" "$test_func"

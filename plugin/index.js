@@ -15,7 +15,11 @@ import {
   checkContainerRunning,
   getSessionsDir,
   getCacheDir,
+  runWithTimeout,
 } from "./helpers.js"
+
+// Timeout for init operations (2 seconds)
+const INIT_TIMEOUT_MS = 2000
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -67,11 +71,11 @@ async function cleanupStaleSessions(client) {
 // ============ Plugin Export ============
 
 export const OCDC = async ({ client }) => {
-  // Install command file if needed
-  await installCommand(client)
+  // Install command file if needed (don't block on slow API)
+  runWithTimeout(() => installCommand(client), INIT_TIMEOUT_MS)
   
-  // Cleanup stale sessions
-  await cleanupStaleSessions(client)
+  // Cleanup stale sessions (don't block on slow API)
+  runWithTimeout(() => cleanupStaleSessions(client), INIT_TIMEOUT_MS)
   
   return {
     tool: {

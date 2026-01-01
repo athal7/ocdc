@@ -5,6 +5,32 @@ import {
 import { join, basename } from "path"
 import { execSync, spawnSync } from "child_process"
 
+// ============ Utility Functions ============
+
+/**
+ * Wraps a promise with a timeout. If the promise doesn't resolve within
+ * the specified time, the timeout rejects with 'TIMEOUT'.
+ */
+export function withTimeout(promise, ms) {
+  let timeoutId
+  const timeout = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error('TIMEOUT')), ms)
+  })
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timeoutId))
+}
+
+/**
+ * Runs an async function with a timeout, returning undefined on timeout or error.
+ * Use this for fire-and-forget operations that shouldn't block.
+ */
+export async function runWithTimeout(fn, ms) {
+  try {
+    return await withTimeout(fn(), ms)
+  } catch {
+    return undefined
+  }
+}
+
 // Directory getters - respect OCDC environment variables
 export function getCacheDir() {
   return process.env.OCDC_CACHE_DIR || 
