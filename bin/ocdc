@@ -91,16 +91,18 @@ plugin_install() {
     exit 1
   fi
   
-  mkdir -p "$PLUGIN_DEST"
+  mkdir -p "$PLUGIN_DEST/command"
   cp "$PLUGIN_SOURCE/index.js" "$PLUGIN_DEST/"
   cp "$PLUGIN_SOURCE/helpers.js" "$PLUGIN_DEST/"
-  mkdir -p "$PLUGIN_DEST/command"
-  cp "$PLUGIN_SOURCE/command/ocdc-use.md" "$PLUGIN_DEST/command/"
+  cp "$PLUGIN_SOURCE/command/ocdc.md" "$PLUGIN_DEST/command/"
+  
+  # Remove old command file if exists
+  rm -f "$PLUGIN_DEST/command/ocdc-use.md"
   
   echo "Plugin installed to: $PLUGIN_DEST"
   echo ""
-  echo "Add to your ~/.config/opencode/opencode.json:"
-  echo '  "plugins": ["~/.config/opencode/plugins/ocdc"]'
+  echo "Add to your ~/.config/opencode/opencode.json plugin array:"
+  echo '  "plugin": ["~/.config/opencode/plugins/ocdc"]'
 }
 
 plugin_status() {

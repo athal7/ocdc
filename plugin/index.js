@@ -38,14 +38,19 @@ async function installCommand(client) {
     if (!configDir) return
     
     const commandDir = join(configDir, "command")
-    const destFile = join(commandDir, "ocdc-use.md")
+    const destFile = join(commandDir, "ocdc.md")
     
-    if (!existsSync(destFile)) {
-      mkdirSync(commandDir, { recursive: true })
-      const sourceFile = join(__dirname, "command/ocdc-use.md")
-      if (existsSync(sourceFile)) {
-        copyFileSync(sourceFile, destFile)
-      }
+    // Always update command file to latest version
+    mkdirSync(commandDir, { recursive: true })
+    const sourceFile = join(__dirname, "command/ocdc.md")
+    if (existsSync(sourceFile)) {
+      copyFileSync(sourceFile, destFile)
+    }
+    
+    // Clean up old command file name
+    const oldFile = join(commandDir, "ocdc-use.md")
+    if (existsSync(oldFile)) {
+      unlinkSync(oldFile)
     }
   } catch {}
 }
@@ -145,8 +150,8 @@ export const OCDC = async ({ client }) => {
         }
       }),
       
-      // Interactive use command for manual targeting
-      ocdc_use: tool({
+      // Interactive command for manual devcontainer targeting
+      ocdc: tool({
         description: "Set active devcontainer for this session. Use 'off' to disable, or 'repo/branch' for specific repo.",
         args: {
           target: tool.schema.string().optional().describe(
@@ -169,14 +174,14 @@ export const OCDC = async ({ client }) => {
             const session = loadSession(sessionID)
             if (!session) {
               return "No devcontainer active for this session.\n\n" +
-                     "Use `/ocdc-use <branch>` to target a devcontainer."
+                     "Use `/ocdc <branch>` to target a devcontainer."
             }
             const running = checkContainerRunning(session.workspace)
             return `Current devcontainer: ${session.repoName}/${session.branch}\n` +
                    `Workspace: ${session.workspace}\n` +
                    `Status: ${running ? "Running" : "Not running"}\n` +
                    (session.sourceUrl ? `Source: ${session.sourceUrl}\n` : "") +
-                   `\nUse \`/ocdc-use off\` to disable.`
+                   `\nUse \`/ocdc off\` to disable.`
           }
           
           // Disable request
@@ -202,7 +207,7 @@ export const OCDC = async ({ client }) => {
               .map(m => `  - ${m.repoName}/${m.branch}`)
               .join("\n")
             return `Ambiguous branch '${target}' found in multiple repos:\n${options}\n\n` +
-                   `Use \`/ocdc-use <repo>/${target}\` to specify.`
+                   `Use \`/ocdc <repo>/${target}\` to specify.`
           }
           
           const { workspace, repoName, branch } = resolved
@@ -225,7 +230,7 @@ export const OCDC = async ({ client }) => {
           return `Session now targeting: ${repoName}/${branch}\n` +
                  `Workspace: ${workspace}\n\n` +
                  `All commands will run inside this container.\n` +
-                 `Use \`/ocdc-use off\` to disable, or prefix with \`HOST:\` to run on host.`
+                 `Use \`/ocdc off\` to disable, or prefix with \`HOST:\` to run on host.`
         }
       }),
     },
