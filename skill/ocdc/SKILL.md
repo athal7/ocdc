@@ -1,9 +1,9 @@
 ---
-name: devcontainer-worktrees
+name: ocdc
 description: Concurrent branch development with devcontainers using clone-based isolation
 ---
 
-# Devcontainer Worktrees (ocdc)
+# ocdc - OpenCode DevContainers
 
 When working on projects with devcontainers, use `ocdc` for concurrent branch development instead of git worktrees.
 
