@@ -95,7 +95,39 @@ Scripts support these env vars to allow test isolation:
 
 Releases are automated via GitHub Actions. To create a release:
 
-1. Tag the commit: `git tag v1.0.0`
-2. Push the tag: `git push origin v1.0.0`
+1. Update version in `bin/ocdc`
+2. Commit: `git commit -am "chore: bump version to v1.0.0"`
+3. Tag: `git tag v1.0.0`
+4. Push: `git push origin main --tags`
+5. Calculate SHA256: `curl -L https://github.com/athal7/ocdc/archive/refs/tags/v1.0.0.tar.gz | shasum -a 256`
+6. Update `Formula/ocdc.rb` in the [homebrew-tap](https://github.com/athal7/homebrew-tap) repo with:
+   - New version number
+   - New URL
+   - New SHA256
+7. Commit and push to homebrew-tap
 
-The release workflow will run tests, then create a GitHub release with the tarball.
+The release workflow will run tests and create a GitHub release with the tarball.
+
+## Homebrew Formula
+
+The Homebrew formula is maintained separately in the [homebrew-tap](https://github.com/athal7/homebrew-tap) repository, not in this repo.
+
+### Installing from the Tap
+
+Users install with:
+```bash
+brew install athal7/tap/ocdc
+```
+
+### Updating the Formula
+
+To update the formula after a release:
+
+1. Clone the tap repo: `git clone https://github.com/athal7/homebrew-tap.git`
+2. Edit `Formula/ocdc.rb` with the new version, URL, and SHA256
+3. Test locally: `brew install --build-from-source Formula/ocdc.rb`
+4. Run tests: `brew test ocdc`
+5. Audit: `brew audit --strict ocdc`
+6. Commit and push
+
+The tap repository has CI that automatically tests the formula.

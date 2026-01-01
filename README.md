@@ -22,11 +22,27 @@ When working on multiple branches, you need isolated development environments. G
 
 ## Installation
 
+### Homebrew (Recommended)
+
 ```bash
 brew install athal7/tap/ocdc
+
+# Enable automatic polling (optional)
+brew services start ocdc
 ```
 
-Requires: `jq`, `devcontainer` CLI (`npm install -g @devcontainers/cli`)
+### Manual Installation
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/athal7/ocdc/main/install.sh | bash
+```
+
+### Dependencies
+
+- `jq` - JSON processor (auto-installed with Homebrew)
+- `tmux` - Terminal multiplexer (auto-installed with Homebrew)
+- `devcontainer` CLI - Install with: `npm install -g @devcontainers/cli`
+- `opencode` - Required for polling features: `npm install -g @opencode/cli`
 
 ## Usage
 
@@ -57,11 +73,44 @@ ocdc down --all         # Stop all
 2. **Ports**: Ephemeral override with unique port, passed via `--override-config`.
 3. **Tracking**: `~/.cache/ocdc/ports.json`
 
-## Poll Configuration
+## Automatic Polling (Optional)
 
 ocdc can automatically poll external sources (GitHub PRs, Linear issues) and create devcontainer sessions with OpenCode to work on them.
 
-Poll configs live in `~/.config/ocdc/polls/`. See the example configs in [`share/ocdc/examples/`](share/ocdc/examples/) for the full schema and available template variables.
+### Quick Start
+
+```bash
+# Copy example config
+mkdir -p ~/.config/ocdc/polls
+cp "$(brew --prefix ocdc)/share/ocdc/examples/github-issues.yaml" ~/.config/ocdc/polls/
+
+# Edit with your repo and label
+vim ~/.config/ocdc/polls/github-issues.yaml
+
+# Start automatic polling (runs every 5 minutes)
+brew services start ocdc
+
+# View logs
+tail -f "$(brew --prefix)/var/log/ocdc-poll.log"
+```
+
+### Configuration
+
+Poll configs live in `~/.config/ocdc/polls/`. Each config defines:
+- `fetch_command` - Shell command that outputs JSON array of items
+- `item_mapping` - jq expressions to extract fields
+- `repo_paths` - Map repo names to local paths
+- `prompt` - Template for OpenCode session prompt
+
+See the example configs in [`share/ocdc/examples/`](share/ocdc/examples/) for the full schema.
+
+### Manual Polling
+
+Run a single poll cycle without setting up the service:
+
+```bash
+ocdc poll --once
+```
 
 ## License
 
