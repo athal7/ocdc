@@ -82,7 +82,7 @@ ocdc can automatically poll external sources (GitHub PRs, Linear issues) and cre
 ```bash
 # Copy example config
 mkdir -p ~/.config/ocdc/polls
-cp /opt/homebrew/Cellar/ocdc/*/share/ocdc/examples/github-issues.yaml ~/.config/ocdc/polls/
+cp "$(brew --prefix ocdc)/share/ocdc/examples/github-issues.yaml" ~/.config/ocdc/polls/
 
 # Edit with your repo and label
 vim ~/.config/ocdc/polls/github-issues.yaml
@@ -91,7 +91,7 @@ vim ~/.config/ocdc/polls/github-issues.yaml
 brew services start ocdc
 
 # View logs
-tail -f /opt/homebrew/var/log/ocdc-poll.log
+tail -f "$(brew --prefix)/var/log/ocdc-poll.log"
 ```
 
 ### Configuration
