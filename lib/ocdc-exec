@@ -74,7 +74,7 @@ if ! jq -e --arg ws "$WORKSPACE" '.[$ws]' "$PORTS_FILE" >/dev/null 2>&1; then
 fi
 
 # Get workspace ID for override file
-WORKSPACE_ID=$(echo "$WORKSPACE" | md5 -q 2>/dev/null || echo "$WORKSPACE" | md5sum | cut -d' ' -f1)
+WORKSPACE_ID=$(ocdc_path_id "$WORKSPACE")
 OVERRIDE_FILE="${OVERRIDES_DIR}/${WORKSPACE_ID}.json"
 
 # Build exec args

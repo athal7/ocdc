@@ -11,4 +11,6 @@ fileignoreconfig:
   checksum: 58689981ad53f2d8e3ec7050e03fa1a8d7eed51365f3d2147ebca9d5f0ae2829
 - filename: lib/ocdc-poll
   checksum: 3d7076a52d1698fd04fb2e5ca44889710316e9febdefb05dba16ca34f244a989
+- filename: test/test_paths.bash
+  checksum: c99eca6d022f1c0ad836c57ee974d3110b32b19ffe9578ef4b30f5d5b51300dd
 version: "1.0"

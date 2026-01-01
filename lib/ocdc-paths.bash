@@ -28,6 +28,14 @@ OCDC_POLLS_DIR="${OCDC_POLLS_DIR:-${OCDC_CONFIG_DIR}/polls}"
 _LEGACY_CONFIG_DIR="${HOME}/.config/devcontainer-multi"
 _LEGACY_CACHE_DIR="${HOME}/.cache/devcontainer-multi"
 
+# Generate a stable ID from a path using MD5 hash
+# Used for workspace identifiers, not security (short, deterministic IDs)
+# Works on both macOS (md5) and Linux (md5sum)
+ocdc_path_id() {
+  local path="$1"
+  echo "$path" | md5 -q 2>/dev/null || echo "$path" | md5sum | cut -d' ' -f1
+}
+
 # Ensure all required directories exist
 ocdc_ensure_dirs() {
   mkdir -p "$OCDC_CONFIG_DIR"

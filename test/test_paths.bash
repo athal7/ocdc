@@ -236,6 +236,62 @@ test_env_override_respected() {
   unset OCDC_CONFIG_DIR OCDC_CACHE_DIR
 }
 
+test_path_id_returns_consistent_hash() {
+  source "$LIB_DIR/ocdc-paths.bash"
+  
+  local path="/some/test/path"
+  local hash1=$(ocdc_path_id "$path")
+  local hash2=$(ocdc_path_id "$path")
+  
+  # Should return same hash for same input
+  assert_equals "$hash1" "$hash2"
+}
+
+test_path_id_returns_32_char_hex() {
+  source "$LIB_DIR/ocdc-paths.bash"
+  
+  local hash=$(ocdc_path_id "/test/path")
+  
+  # MD5 produces 32 hex characters
+  if [[ ${#hash} -ne 32 ]]; then
+    echo "Expected 32 characters, got ${#hash}: $hash"
+    return 1
+  fi
+  
+  # Should only contain hex characters
+  if [[ ! "$hash" =~ ^[a-f0-9]+$ ]]; then
+    echo "Hash should only contain hex chars: $hash"
+    return 1
+  fi
+  
+  return 0
+}
+
+test_path_id_different_paths_different_hashes() {
+  source "$LIB_DIR/ocdc-paths.bash"
+  
+  local hash1=$(ocdc_path_id "/path/one")
+  local hash2=$(ocdc_path_id "/path/two")
+  
+  if [[ "$hash1" == "$hash2" ]]; then
+    echo "Different paths should produce different hashes"
+    return 1
+  fi
+  
+  return 0
+}
+
+test_path_id_produces_known_hash() {
+  source "$LIB_DIR/ocdc-paths.bash"
+  
+  # Verify known hash to catch implementation changes
+  # MD5 of "/test" (with trailing newline from echo) is aa4100bf...
+  local hash=$(ocdc_path_id "/test")
+  local expected="aa4100bfddcf9c62750b376c5ebd2b0e"
+  
+  assert_equals "$expected" "$hash"
+}
+
 # =============================================================================
 # Run Tests
 # =============================================================================
@@ -255,7 +311,11 @@ for test_func in \
   test_migration_moves_old_cache \
   test_migration_is_idempotent \
   test_migration_preserves_existing_new_dirs \
-  test_env_override_respected
+  test_env_override_respected \
+  test_path_id_returns_consistent_hash \
+  test_path_id_returns_32_char_hex \
+  test_path_id_different_paths_different_hashes \
+  test_path_id_produces_known_hash
 do
   setup
   run_test "${test_func#test_}" "$test_func"

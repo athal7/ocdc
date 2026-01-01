@@ -83,7 +83,7 @@ stop_container() {
   log "Stopping container for $repo (port $port)..."
   
   # Generate workspace ID for override file
-  local ws_id=$(echo "$ws" | md5 -q 2>/dev/null || echo "$ws" | md5sum | cut -d' ' -f1)
+  local ws_id=$(ocdc_path_id "$ws")
   local override_file="${OVERRIDES_DIR}/${ws_id}.json"
   
   # Try to stop via devcontainer CLI
@@ -130,7 +130,7 @@ prune_stale() {
       jq --arg ws "$ws" 'del(.[$ws])' "$PORTS_FILE" > "$tmp" && mv "$tmp" "$PORTS_FILE"
       
       # Clean up override file
-      local ws_id=$(echo "$ws" | md5 -q 2>/dev/null || echo "$ws" | md5sum | cut -d' ' -f1)
+      local ws_id=$(ocdc_path_id "$ws")
       rm -f "${OVERRIDES_DIR}/${ws_id}.json"
       
       ((pruned++)) || true
