@@ -22,6 +22,7 @@ OCDC_PORTS_FILE="${OCDC_CACHE_DIR}/ports.json"
 OCDC_OVERRIDES_DIR="${OCDC_CACHE_DIR}/overrides"
 OCDC_CONFIG_FILE="${OCDC_CONFIG_DIR}/config.json"
 OCDC_POLL_STATE_DIR="${OCDC_DATA_DIR}/poll-state"
+OCDC_POLLS_DIR="${OCDC_POLLS_DIR:-${OCDC_CONFIG_DIR}/polls}"
 
 # Legacy paths (for migration)
 _LEGACY_CONFIG_DIR="${HOME}/.config/devcontainer-multi"
@@ -34,6 +35,8 @@ ocdc_ensure_dirs() {
   mkdir -p "$OCDC_OVERRIDES_DIR"
   mkdir -p "$OCDC_DATA_DIR"
   mkdir -p "$OCDC_CLONES_DIR"
+  mkdir -p "$OCDC_POLLS_DIR"
+  mkdir -p "$OCDC_POLL_STATE_DIR"
   
   # Initialize empty files if they don't exist
   [[ -f "$OCDC_PORTS_FILE" ]] || echo '{}' > "$OCDC_PORTS_FILE"
@@ -104,3 +107,4 @@ export OCDC_PORTS_FILE
 export OCDC_OVERRIDES_DIR
 export OCDC_CONFIG_FILE
 export OCDC_POLL_STATE_DIR
+export OCDC_POLLS_DIR

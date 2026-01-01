@@ -1,4 +1,10 @@
 fileignoreconfig:
 - filename: test/test_plugin.bash
   checksum: ec7393d0874adfea8622aa41a922aa67b873f433405e007d72ac9aa7b2adb3a6
+- filename: share/ocdc/polls/github-reviews.yaml
+  checksum: a483527a36852b47eb0326a83f04f1867a0de1647011f63c0554ade0f189cfd4
+- filename: share/ocdc/polls/linear-assigned.yaml
+  checksum: 3ed6a1d846bc26f9c17bb3bf6ee72eefc2a042071359be561eff97bde00fee5a
+- filename: test/test_poll_config.bash
+  checksum: 890ee3f923c6e7da04c29bb7e09dfb913040848e2bf7c8d1b46dc7c070cb9cf7
 version: "1.0"

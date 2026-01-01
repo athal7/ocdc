@@ -1,0 +1,78 @@
+# GitHub PR Reviews Poll Configuration
+#
+# Polls for PRs where your review is requested and creates devcontainer
+# sessions with OpenCode to review the code.
+#
+# Variables available for templates:
+#   {repo}        - Full repo name (owner/repo)
+#   {repo_short}  - Just repo name
+#   {number}      - PR number
+#   {title}       - PR title
+#   {url}         - PR URL
+#   {head_ref}    - Source branch
+#   {base_ref}    - Target branch
+#   {author}      - PR author
+#   {labels}      - Comma-separated labels
+#   {workspace}   - Devcontainer workspace path
+#   {branch}      - Git branch name
+#   {source_url}  - Same as {url}
+
+id: github-reviews
+source: github-search
+enabled: true
+
+config:
+  query: "is:pr is:open review-requested:@me"
+
+filters:
+  repos:
+    # Uncomment and modify to filter repositories
+    # allow:
+    #   - "myorg/*"
+    # deny:
+    #   - "myorg/archived-*"
+  labels:
+    deny:
+      - "wip"
+      - "draft"
+      - "do-not-review"
+
+key_template: "{repo}-pr-{number}"
+clone_name_template: "pr-{number}"
+branch_template: "{head_ref}"
+
+repo_source:
+  strategy: auto
+
+prompt:
+  template: |
+    You are working in a devcontainer at {workspace} on branch {branch}.
+
+    ## Task: Review Pull Request
+
+    **PR #{number}: {title}**
+    Repository: {repo}
+    Author: {author}
+    URL: {source_url}
+
+    Please review the code changes in this pull request:
+
+    1. Fetch and checkout the PR branch
+    2. Review the changes for:
+       - Code quality and best practices
+       - Potential bugs or edge cases
+       - Test coverage
+       - Documentation
+    3. Prepare review comments
+
+    **Important**: Wait for my approval before submitting the review to GitHub.
+
+session:
+  name_template: "ocdc-review-{repo_short}-{number}"
+  agent: review
+
+cleanup:
+  on:
+    - merged
+    - closed
+  delay: 5m

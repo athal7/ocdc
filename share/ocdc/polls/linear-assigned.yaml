@@ -1,0 +1,90 @@
+# Linear Issues Poll Configuration
+#
+# Polls for Linear issues assigned to you and creates devcontainer
+# sessions with OpenCode to work on them.
+#
+# SETUP REQUIRED:
+# 1. Set OCDC_LINEAR_API_KEY or LINEAR_API_KEY environment variable
+# 2. Configure repo_source.mapping below to map teams/labels to local repos
+# 3. Set enabled: true when ready
+#
+# Variables available for templates:
+#   {identifier}  - Issue ID (ABC-123)
+#   {team}        - Team key (ENG)
+#   {title}       - Issue title
+#   {description} - Issue description
+#   {url}         - Issue URL
+#   {state}       - Current state
+#   {labels}      - Comma-separated labels
+#   {priority}    - Priority number
+#   {title_slug}  - URL-safe title
+#   {workspace}   - Devcontainer workspace path
+#   {branch}      - Git branch name
+
+id: linear-assigned
+source: linear
+enabled: false  # Set to true after configuring repo mapping
+
+config:
+  filter:
+    assignee: "@me"
+    state:
+      type:
+        in:
+          - started
+          - unstarted
+
+filters:
+  labels:
+    deny:
+      - "blocked"
+      - "needs-design"
+      - "on-hold"
+
+key_template: "{team}-{identifier}"
+clone_name_template: "linear-{identifier}"
+branch_template: "{identifier}"
+
+repo_source:
+  strategy: map
+  mapping:
+    # Map Linear teams or labels to local repo paths
+    # Examples:
+    # "team:ENG": "~/Projects/api"
+    # "team:WEB": "~/Projects/web"
+    # "label:backend": "~/Projects/api"
+    # "label:frontend": "~/Projects/web"
+    # "project:Mobile App": "~/Projects/mobile"
+  default: null  # Set a default repo path if desired
+
+prompt:
+  template: |
+    You are working in a devcontainer at {workspace} on branch {branch}.
+
+    ## Task: Work on Linear Issue
+
+    **[{identifier}] {title}**
+    Team: {team}
+    URL: {url}
+    Priority: {priority}
+
+    ### Description
+    {description}
+
+    Please:
+    1. Understand the requirements from the issue description
+    2. Implement the changes
+    3. Write tests if appropriate
+    4. Prepare a pull request
+
+    When ready, create a PR and link it to this Linear issue.
+
+session:
+  name_template: "ocdc-linear-{identifier}"
+  agent: dev
+
+cleanup:
+  on:
+    - completed
+    - canceled
+  delay: 5m
