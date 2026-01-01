@@ -23,8 +23,16 @@
 
 set -euo pipefail
 
-VERSION="0.1.0"
+VERSION="2.1.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Source paths library for OCDC_* variables
+source "${SCRIPT_DIR}/../lib/ocdc-paths.bash" 2>/dev/null || true
+
+# Plugin paths
+PLUGIN_SOURCE="${SCRIPT_DIR}/../plugin"
+OPENCODE_PLUGINS_DIR="${HOME}/.config/opencode/plugins"
+PLUGIN_DEST="${OPENCODE_PLUGINS_DIR}/ocdc"
 
 # Show version
 show_version() {
@@ -53,6 +61,7 @@ Commands:
   exec <cmd>         Execute command in running container
   list               List all instances and clones
   go [branch]        Navigate to an existing clone
+  plugin <cmd>       Manage OpenCode plugin (install/status/uninstall)
   version            Show version information
   help               Show this help message
 
@@ -71,6 +80,83 @@ Examples:
 
 For more information, see: https://github.com/athal7/ocdc
 EOF
+}
+
+# Plugin management
+plugin_install() {
+  echo "Installing ocdc OpenCode plugin..."
+  
+  if [[ ! -d "$PLUGIN_SOURCE" ]]; then
+    echo "Error: Plugin source not found at $PLUGIN_SOURCE" >&2
+    exit 1
+  fi
+  
+  mkdir -p "$PLUGIN_DEST"
+  cp "$PLUGIN_SOURCE/index.js" "$PLUGIN_DEST/"
+  cp "$PLUGIN_SOURCE/helpers.js" "$PLUGIN_DEST/"
+  mkdir -p "$PLUGIN_DEST/command"
+  cp "$PLUGIN_SOURCE/command/ocdc-use.md" "$PLUGIN_DEST/command/"
+  
+  echo "Plugin installed to: $PLUGIN_DEST"
+  echo ""
+  echo "Add to your ~/.config/opencode/opencode.json:"
+  echo '  "plugins": ["~/.config/opencode/plugins/ocdc"]'
+}
+
+plugin_status() {
+  echo "ocdc OpenCode Plugin Status"
+  echo "===========================" 
+  echo ""
+  
+  if [[ -d "$PLUGIN_DEST" ]]; then
+    echo "Installed: Yes"
+    echo "Location:  $PLUGIN_DEST"
+    echo ""
+    echo "Files:"
+    ls -la "$PLUGIN_DEST" 2>/dev/null | tail -n +2
+  else
+    echo "Installed: No"
+    echo ""
+    echo "Run 'ocdc plugin install' to install."
+  fi
+}
+
+plugin_uninstall() {
+  if [[ -d "$PLUGIN_DEST" ]]; then
+    rm -rf "$PLUGIN_DEST"
+    echo "Plugin uninstalled from: $PLUGIN_DEST"
+  else
+    echo "Plugin not installed."
+  fi
+}
+
+plugin_cmd() {
+  local subcmd="${1:-status}"
+  
+  case "$subcmd" in
+    install)
+      plugin_install
+      ;;
+    status)
+      plugin_status
+      ;;
+    uninstall)
+      plugin_uninstall
+      ;;
+    --help|-h)
+      echo "Usage: ocdc plugin <command>"
+      echo ""
+      echo "Commands:"
+      echo "  install    Install/update plugin to ~/.config/opencode/plugins/"
+      echo "  status     Show plugin installation status"
+      echo "  uninstall  Remove plugin"
+      ;;
+    *)
+      echo "Unknown plugin command: $subcmd" >&2
+      echo "Run 'ocdc plugin --help' for usage." >&2
+      exit 1
+      ;;
+  esac
 }
 
 # Dispatch to subcommand
@@ -96,6 +182,9 @@ dispatch() {
       ;;
     tui)
       exec "$SCRIPT_DIR/dctui" "$@"
+      ;;
+    plugin)
+      plugin_cmd "$@"
       ;;
     version|--version|-v)
       show_version
