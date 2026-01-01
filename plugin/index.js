@@ -21,7 +21,41 @@ import {
 // Timeout for init operations (2 seconds)
 const INIT_TIMEOUT_MS = 2000
 
+// Track sessions that have been auto-initialized from environment
+const autoInitializedSessions = new Set()
+
 const __dirname = dirname(fileURLToPath(import.meta.url))
+
+// Auto-initialize session from OCDC_* environment variables (set by ocdc poll)
+function autoInitFromEnv(sessionID) {
+  // Only initialize once per session
+  if (autoInitializedSessions.has(sessionID)) return
+  autoInitializedSessions.add(sessionID)
+  
+  // Check if already has a session
+  if (loadSession(sessionID)) return
+  
+  // Check for OCDC_* environment variables
+  const workspace = process.env.OCDC_WORKSPACE
+  const branch = process.env.OCDC_BRANCH
+  
+  if (!workspace || !branch) return
+  if (!existsSync(workspace)) return
+  
+  // Extract repo name from workspace path
+  const parts = workspace.split("/")
+  const repoName = parts[parts.length - 2] || "unknown"
+  
+  // Auto-save session context
+  saveSession(sessionID, {
+    workspace,
+    branch,
+    repoName,
+    sourceUrl: process.env.OCDC_SOURCE_URL,
+    sourceType: process.env.OCDC_SOURCE_TYPE,
+    autoInitialized: true,
+  })
+}
 
 // ============ Internal Functions ============
 
@@ -290,6 +324,9 @@ export const OCDC = async ({ client }) => {
     "tool.execute.before": async (input, output) => {
       // Only intercept bash commands
       if (input.tool !== "bash") return
+      
+      // Auto-initialize from environment if needed (for ocdc poll sessions)
+      autoInitFromEnv(input.sessionID)
       
       const session = loadSession(input.sessionID)
       if (!session?.workspace) return

@@ -140,7 +140,7 @@ process_poll() {
   # Execute fetch command
   log "  Fetching items..."
   local items_json
-  if ! items_json=$(eval "$fetch_cmd" 2>&1); then
+  if ! items_json=$(bash -c "$fetch_cmd" 2>&1); then
     log_error "  Fetch command failed: $items_json"
     return 1
   fi
@@ -253,15 +253,20 @@ process_poll() {
     # Create tmux session with opencode
     log "    Creating tmux session: $session_name"
     
-    # Escape prompt for shell
-    local escaped_prompt
-    escaped_prompt=$(printf '%s' "$prompt" | sed "s/'/'\\\\''/g")
+    # Write prompt to temp file to avoid shell escaping issues
+    local prompt_file
+    prompt_file="${OCDC_POLL_STATE_DIR}/prompt-${session_name}.txt"
+    printf '%s' "$prompt" > "$prompt_file"
     
     # Create tmux session running opencode with the prompt
+    # Set OCDC_* environment variables so the plugin knows the context
     # The session runs in the clone directory
-    # After opencode exits, keep bash running so user can inspect
     tmux new-session -d -s "$session_name" -c "$clone_dir" \
-      "opencode --prompt '${escaped_prompt}'; echo 'Press enter to close...'; read"
+      -e "OCDC_WORKSPACE=$clone_dir" \
+      -e "OCDC_BRANCH=$branch" \
+      -e "OCDC_SOURCE_URL=$url" \
+      -e "OCDC_SOURCE_TYPE=github_issue" \
+      "opencode --prompt \"\$(cat '$prompt_file')\"; rm -f '$prompt_file'; echo 'Session complete. Press enter to close...'; read"
     
     log_success "    Session $session_name created"
     log "    Attach with: tmux attach -t $session_name"
