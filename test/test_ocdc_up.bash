@@ -300,6 +300,57 @@ EOF
   return 0
 }
 
+test_ocdc_up_skips_path_traversal_attempts() {
+  # Defense in depth: paths containing ".." should be skipped to prevent
+  # writing files outside the clone directory. While git ls-files shouldn't
+  # return such paths, this protects against edge cases.
+  #
+  # Note: We can't create actual "../" paths on the filesystem, so we test
+  # files with ".." in the filename as a proxy. The real protection is against
+  # malformed git ls-files output that might contain traversal sequences.
+  
+  cd "$TEST_REPO"
+  
+  # Add gitignore pattern
+  cat > .gitignore << 'EOF'
+secrets/
+EOF
+  git add .gitignore
+  git commit -q -m "Add gitignore"
+  
+  # Create a legitimate gitignored file
+  mkdir -p secrets
+  echo "safe-secret" > secrets/safe.txt
+  
+  # Create a file with ".." in its name (valid but suspicious)
+  # This acts as a proxy for testing path traversal protection
+  mkdir -p "secrets/sub"
+  echo "suspicious" > "secrets/sub/..test"
+  
+  # Create a branch
+  git checkout -q -b feature-traversal
+  git checkout -q main 2>/dev/null || git checkout -q master
+  
+  # Run ocdc-up for the branch
+  local output=$("$BIN_DIR/ocdc" up feature-traversal --no-open 2>&1 || true)
+  
+  local clone_dir="$TEST_CLONES_DIR/test-repo/feature-traversal"
+  
+  # The safe file should be copied
+  if [[ ! -f "$clone_dir/secrets/safe.txt" ]]; then
+    echo "secrets/safe.txt was not copied to clone"
+    return 1
+  fi
+  
+  # Files with ".." in the path should NOT be copied (defense in depth)
+  if [[ -f "$clone_dir/secrets/sub/..test" ]]; then
+    echo "File with '..' in path should not be copied (path traversal protection)"
+    return 1
+  fi
+  
+  return 0
+}
+
 # =============================================================================
 # Run Tests
 # =============================================================================
@@ -316,7 +367,8 @@ for test_func in \
   test_ocdc_up_creates_clone_for_branch \
   test_ocdc_up_no_open_flag_works \
   test_ocdc_up_override_sets_correct_workspace_folder \
-  test_ocdc_up_copies_gitignored_files_to_clone
+  test_ocdc_up_copies_gitignored_files_to_clone \
+  test_ocdc_up_skips_path_traversal_attempts
 do
   setup
   run_test "${test_func#test_}" "$test_func"

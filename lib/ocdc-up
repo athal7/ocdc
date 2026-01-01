@@ -155,6 +155,9 @@ copy_gitignored_files() {
   while IFS= read -r rel_path; do
     [[ -z "$rel_path" ]] && continue
     
+    # Skip paths with parent directory references (defense in depth)
+    [[ "$rel_path" == *".."* ]] && continue
+    
     # Skip lock files (generated, cause conflicts)
     local filename="${rel_path##*/}"
     if [[ "$filename" =~ ^($skip_files)$ ]]; then
