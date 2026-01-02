@@ -1210,26 +1210,44 @@ test_build_ocdc_exec_command_preserves_shell_features() {
 # OpenCode provides free models, so no API credentials needed.
 
 # Helper to check if we can run integration tests
-# Integration tests create OpenCode sessions that persist in the session list.
-# They require explicit opt-in via OCDC_INTEGRATION_TESTS=1 to avoid
-# polluting the user's session history during normal test runs.
 can_run_integration_tests() {
-  # Require explicit opt-in (these tests create persistent sessions)
-  if [[ "${OCDC_INTEGRATION_TESTS:-}" != "1" ]]; then
-    return 1
-  fi
-  
   # Check opencode is installed
   if ! command -v opencode &>/dev/null; then
     return 1
   fi
   
-  # Check plugin is installed
-  if [[ ! -f "$HOME/.config/opencode/plugins/ocdc/index.js" ]]; then
+  # Check plugin is installed (use REAL_HOME since we may have changed HOME)
+  local plugin_path="${REAL_HOME:-$HOME}/.config/opencode/plugins/ocdc/index.js"
+  if [[ ! -f "$plugin_path" ]]; then
     return 1
   fi
   
   return 0
+}
+
+# Setup isolated environment for integration tests
+# Uses temp directory for opencode data while symlinking config from real HOME
+setup_integration_env() {
+  REAL_HOME="$HOME"
+  INTEGRATION_TEST_DIR=$(mktemp -d)
+  export HOME="$INTEGRATION_TEST_DIR"
+  
+  # Create necessary directories
+  mkdir -p "$HOME/.config"
+  mkdir -p "$HOME/.local/share"
+  
+  # Symlink opencode config (contains plugin registrations and auth)
+  ln -s "$REAL_HOME/.config/opencode" "$HOME/.config/opencode"
+}
+
+# Cleanup isolated environment after integration tests
+cleanup_integration_env() {
+  if [[ -n "${INTEGRATION_TEST_DIR:-}" ]] && [[ -d "$INTEGRATION_TEST_DIR" ]]; then
+    rm -rf "$INTEGRATION_TEST_DIR"
+  fi
+  if [[ -n "${REAL_HOME:-}" ]]; then
+    export HOME="$REAL_HOME"
+  fi
 }
 
 # =============================================================================
@@ -1376,9 +1394,11 @@ extract_opencode_text() {
 
 test_opencode_starts_within_timeout() {
   if ! can_run_integration_tests; then
-    echo "SKIP: Set OCDC_INTEGRATION_TESTS=1 to enable"
+    echo "SKIP: opencode not installed or plugin not configured"
     return 0
   fi
+  
+  setup_integration_env
   
   # CRITICAL: Verify opencode starts within 10 seconds
   # This catches plugin initialization hangs that would block startup indefinitely.
@@ -1394,6 +1414,8 @@ test_opencode_starts_within_timeout() {
   
   end_time=$(date +%s)
   elapsed=$((end_time - start_time))
+  
+  cleanup_integration_env
   
   if [[ $exit_code -ne 0 ]]; then
     # Check if it was a timeout (exit code 142 = SIGALRM)
@@ -1423,16 +1445,21 @@ test_opencode_starts_within_timeout() {
 
 test_opencode_plugin_loads() {
   if ! can_run_integration_tests; then
-    echo "SKIP: Set OCDC_INTEGRATION_TESTS=1 to enable"
+    echo "SKIP: opencode not installed or plugin not configured"
     return 0
   fi
+  
+  setup_integration_env
   
   # Ask opencode to list tools - ocdc tools should be present
   local output
   output=$(run_opencode "List all available tool names you have. Just output the tool names, one per line, nothing else." 120) || {
+    cleanup_integration_env
     echo "opencode run failed: $output"
     return 1
   }
+  
+  cleanup_integration_env
   
   # Check for ocdc tools in output
   if ! echo "$output" | grep -qi "ocdc"; then
@@ -1446,16 +1473,21 @@ test_opencode_plugin_loads() {
 
 test_opencode_ocdc_tool_responds() {
   if ! can_run_integration_tests; then
-    echo "SKIP: Set OCDC_INTEGRATION_TESTS=1 to enable"
+    echo "SKIP: opencode not installed or plugin not configured"
     return 0
   fi
+  
+  setup_integration_env
   
   # Call the ocdc tool with no args (status check)
   local output
   output=$(run_opencode "Use the ocdc tool with no arguments to check current status." 120) || {
+    cleanup_integration_env
     echo "opencode run failed: $output"
     return 1
   }
+  
+  cleanup_integration_env
   
   # Should mention "No devcontainer active" or similar
   if ! echo "$output" | grep -qiE "(no devcontainer|not active|ocdc|devcontainer)"; then
@@ -1469,16 +1501,21 @@ test_opencode_ocdc_tool_responds() {
 
 test_opencode_ocdc_set_context_rejects_invalid() {
   if ! can_run_integration_tests; then
-    echo "SKIP: Set OCDC_INTEGRATION_TESTS=1 to enable"
+    echo "SKIP: opencode not installed or plugin not configured"
     return 0
   fi
+  
+  setup_integration_env
   
   # Try to set context with non-existent workspace
   local output
   output=$(run_opencode "Use the ocdc_set_context tool with workspace='/nonexistent/path/12345' and branch='test'." 120) || {
+    cleanup_integration_env
     echo "opencode run failed: $output"
     return 1
   }
+  
+  cleanup_integration_env
   
   # Should report error about workspace not existing
   if ! echo "$output" | grep -qiE "(error|not exist|invalid|cannot find)"; then
@@ -1492,16 +1529,21 @@ test_opencode_ocdc_set_context_rejects_invalid() {
 
 test_opencode_ocdc_attempts_to_create_workspace() {
   if ! can_run_integration_tests; then
-    echo "SKIP: Set OCDC_INTEGRATION_TESTS=1 to enable"
+    echo "SKIP: opencode not installed or plugin not configured"
     return 0
   fi
+  
+  setup_integration_env
   
   # Try to target a non-existent workspace - should attempt to create it
   local output
   output=$(run_opencode "Use the ocdc tool with target='nonexistent-branch-xyz123'." 120) || {
+    cleanup_integration_env
     echo "opencode run failed: $output"
     return 1
   }
+  
+  cleanup_integration_env
   
   # Should attempt to create the workspace and report failure (since branch doesn't exist)
   if ! echo "$output" | grep -qiE "(create|failed|error|not found)"; then
@@ -1515,16 +1557,21 @@ test_opencode_ocdc_attempts_to_create_workspace() {
 
 test_opencode_ocdc_off_without_session() {
   if ! can_run_integration_tests; then
-    echo "SKIP: Set OCDC_INTEGRATION_TESTS=1 to enable"
+    echo "SKIP: opencode not installed or plugin not configured"
     return 0
   fi
+  
+  setup_integration_env
   
   # Try to turn off when nothing is active
   local output
   output=$(run_opencode "Use the ocdc tool with target='off'." 120) || {
+    cleanup_integration_env
     echo "opencode run failed: $output"
     return 1
   }
+  
+  cleanup_integration_env
   
   # Should indicate no session was active
   if ! echo "$output" | grep -qiE "(no devcontainer|not active|was not|disabled)"; then
@@ -1538,16 +1585,21 @@ test_opencode_ocdc_off_without_session() {
 
 test_opencode_ocdc_exec_requires_context() {
   if ! can_run_integration_tests; then
-    echo "SKIP: Set OCDC_INTEGRATION_TESTS=1 to enable"
+    echo "SKIP: opencode not installed or plugin not configured"
     return 0
   fi
+  
+  setup_integration_env
   
   # Try to exec without setting context first
   local output
   output=$(run_opencode "Use the ocdc_exec tool with command='echo hello'." 120) || {
+    cleanup_integration_env
     echo "opencode run failed: $output"
     return 1
   }
+  
+  cleanup_integration_env
   
   # Should report no context set
   if ! echo "$output" | grep -qiE "(no.*context|not set|use ocdc_set_context|no devcontainer)"; then
@@ -1561,16 +1613,20 @@ test_opencode_ocdc_exec_requires_context() {
 
 test_opencode_slash_command_exists() {
   if ! can_run_integration_tests; then
-    echo "SKIP: Set OCDC_INTEGRATION_TESTS=1 to enable"
+    echo "SKIP: opencode not installed or plugin not configured"
     return 0
   fi
   
-  # Check that /ocdc command file is installed
-  local cmd_file="$HOME/.config/opencode/command/ocdc.md"
+  setup_integration_env
+  
+  # Check that /ocdc command file is installed (use REAL_HOME for real config)
+  local cmd_file="$REAL_HOME/.config/opencode/command/ocdc.md"
   if [[ ! -f "$cmd_file" ]]; then
     # Plugin should install it on first run, so run opencode once
     run_opencode "Say hello" 30 >/dev/null 2>&1 || true
   fi
+  
+  cleanup_integration_env
   
   if [[ ! -f "$cmd_file" ]]; then
     echo "/ocdc command file not installed at $cmd_file"
@@ -1751,7 +1807,7 @@ echo "Fresh Plugin Installation Test:"
 run_test "fresh_plugin_installation" test_fresh_plugin_installation
 
 echo ""
-echo "OpenCode Runtime Integration Tests (OCDC_INTEGRATION_TESTS=${OCDC_INTEGRATION_TESTS:-unset}):"
+echo "OpenCode Runtime Integration Tests:"
 
 for test_func in \
   test_opencode_starts_within_timeout \
