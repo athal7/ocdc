@@ -27,11 +27,11 @@ module.exports = {
           {
             path: 'dist/devcontainer-multi.tar.gz',
             label: 'OCDC Release Archive',
-            name: 'ocdc-${nextRelease.version}.tar.gz'
+            name: (release) => `ocdc-${release.version}.tar.gz`
           }
         ],
-        releaseNameTemplate: 'OCDC ${nextRelease.version}',
-        releaseBodyTemplate: `## 🎉 Release ${nextRelease.version}
+        releaseName: (release) => `OCDC ${release.version}`,
+        releaseBody: (release) => `## 🎉 Release ${release.version}
 
 ### 📦 Installation
 \`\`\`bash
@@ -41,10 +41,10 @@ brew install ocdc/tap/ocdc
 Or download the archive below.
 
 ### 📋 Changes
-${nextRelease.notes}
+${release.notes}
 
 ### 🔗 Assets
-- Binary release: \`ocdc-${nextRelease.version}.tar.gz\`
+- Binary release: \`ocdc-${release.version}.tar.gz\`
 - Homebrew formula will be automatically updated
         `
       }
@@ -59,7 +59,7 @@ ${nextRelease.notes}
           'plugin/package.json',
           'package.json'
         ],
-        message: 'chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}'
+        message: (release) => `chore(release): ${release.version} [skip ci]\n\n${release.notes}`
       }
     ],
     
