@@ -1472,22 +1472,22 @@ test_opencode_ocdc_set_context_rejects_invalid() {
   return 0
 }
 
-test_opencode_ocdc_asks_to_create_workspace() {
+test_opencode_ocdc_attempts_to_create_workspace() {
   if ! can_run_integration_tests; then
     echo "SKIP: opencode integration tests disabled"
     return 0
   fi
   
-  # Try to target a non-existent workspace - should ask for confirmation
+  # Try to target a non-existent workspace - should attempt to create it
   local output
   output=$(run_opencode "Use the ocdc tool with target='nonexistent-branch-xyz123'." 120) || {
     echo "opencode run failed: $output"
     return 1
   }
   
-  # Should ask about creating the workspace
-  if ! echo "$output" | grep -qiE "(create|confirm|would you like|not found)"; then
-    echo "ocdc should ask about creating non-existent workspace"
+  # Should attempt to create the workspace and report failure (since branch doesn't exist)
+  if ! echo "$output" | grep -qiE "(create|failed|error|not found)"; then
+    echo "ocdc should attempt to create non-existent workspace and report failure"
     echo "Output: $output"
     return 1
   fi
@@ -1739,7 +1739,7 @@ for test_func in \
   test_opencode_plugin_loads \
   test_opencode_ocdc_tool_responds \
   test_opencode_ocdc_set_context_rejects_invalid \
-  test_opencode_ocdc_asks_to_create_workspace \
+  test_opencode_ocdc_attempts_to_create_workspace \
   test_opencode_ocdc_off_without_session \
   test_opencode_ocdc_exec_requires_context \
   test_opencode_slash_command_exists

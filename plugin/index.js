@@ -236,41 +236,42 @@ export const OCDC = async ({ client }) => {
           const resolved = resolveWorkspace(target)
           
           if (!resolved) {
-            // Workspace doesn't exist - offer to create it
-            if (shouldCreate) {
-              // User confirmed creation - run ocdc up
-              try {
-                // Use execFileSync to avoid shell injection from target
-                const result = execFileSync('ocdc', ['up', target], {
-                  encoding: "utf-8",
-                  maxBuffer: 10 * 1024 * 1024,
-                  timeout: 300000, // 5 minutes for container setup
+            // Workspace doesn't exist - try to create it automatically
+            try {
+              // Use execFileSync to avoid shell injection from target
+              const result = execFileSync('ocdc', ['up', target], {
+                encoding: "utf-8",
+                maxBuffer: 10 * 1024 * 1024,
+                timeout: 300000, // 5 minutes for container setup
+              })
+              
+              // Re-resolve after creation
+              const newResolved = resolveWorkspace(target)
+              if (newResolved && !newResolved.ambiguous) {
+                saveSession(sessionID, {
+                  branch: newResolved.branch,
+                  workspace: newResolved.workspace,
+                  repoName: newResolved.repoName,
                 })
-                
-                // Re-resolve after creation
-                const newResolved = resolveWorkspace(target)
-                if (newResolved && !newResolved.ambiguous) {
-                  saveSession(sessionID, {
-                    branch: newResolved.branch,
-                    workspace: newResolved.workspace,
-                    repoName: newResolved.repoName,
-                  })
-                  return `Workspace created and session now targeting: ${newResolved.repoName}/${newResolved.branch}\n` +
-                         `Workspace: ${newResolved.workspace}\n\n` +
-                         `All commands will run inside this container.\n` +
-                         `Use \`/ocdc off\` to disable, or prefix with \`HOST:\` to run on host.\n\n` +
-                         `--- ocdc up output ---\n${result}`
-                }
-                return `Workspace created but could not auto-target. Output:\n${result}`
-              } catch (err) {
-                return `Failed to create workspace: ${err.message}\n${err.stderr || ""}`
+                return `Workspace created and session now targeting: ${newResolved.repoName}/${newResolved.branch}\n` +
+                       `Workspace: ${newResolved.workspace}\n\n` +
+                       `All commands will run inside this container.\n` +
+                       `Use \`/ocdc off\` to disable, or prefix with \`HOST:\` to run on host.\n\n` +
+                       `--- ocdc up output ---\n${result}`
               }
+              return `Workspace created but could not auto-target. Output:\n${result}`
+            } catch (err) {
+              // Auto-creation failed - ask for confirmation
+              if (!shouldCreate) {
+                return `No devcontainer clone found for '${target}' and automatic creation failed.\n\n` +
+                       `Error: ${err.message}\n\n` +
+                       `Would you like me to try creating it again? Call this tool again with create='true' to confirm, ` +
+                       `or run manually: \`ocdc up ${target}\``
+              }
+              
+              // User explicitly asked for creation and it still failed
+              return `Failed to create workspace: ${err.message}\n${err.stderr || ""}`
             }
-            
-            // Ask for confirmation to create
-            return `No devcontainer clone found for '${target}'.\n\n` +
-                   `Would you like me to create it? Call this tool again with create='true' to confirm, ` +
-                   `or run manually: \`ocdc up ${target}\``
           }
           
           if (resolved.ambiguous) {
@@ -286,31 +287,34 @@ export const OCDC = async ({ client }) => {
           // Check if container is running
           const isRunning = checkContainerRunning(workspace)
           if (!isRunning) {
-            // Container exists but not running - offer to start it
-            if (shouldCreate) {
-              try {
-                // Use execFileSync to avoid shell injection from target
-                const result = execFileSync('ocdc', ['up', target], {
-                  encoding: "utf-8",
-                  maxBuffer: 10 * 1024 * 1024,
-                  timeout: 300000,
-                })
-                
-                saveSession(sessionID, { branch, workspace, repoName })
-                return `Container started and session now targeting: ${repoName}/${branch}\n` +
+            // Container exists but not running - try to start it automatically
+            try {
+              // Use execFileSync to avoid shell injection from target
+              const result = execFileSync('ocdc', ['up', target], {
+                encoding: "utf-8",
+                maxBuffer: 10 * 1024 * 1024,
+                timeout: 300000,
+              })
+              
+              saveSession(sessionID, { branch, workspace, repoName })
+              return `Container started and session now targeting: ${repoName}/${branch}\n` +
+                     `Workspace: ${workspace}\n\n` +
+                     `All commands will run inside this container.\n` +
+                     `Use \`/ocdc off\` to disable, or prefix with \`HOST:\` to run on host.\n\n` +
+                     `--- ocdc up output ---\n${result}`
+            } catch (err) {
+              // Auto-start failed - ask for confirmation
+              if (!shouldCreate) {
+                return `Devcontainer for '${branch}' exists but is not running and automatic start failed.\n\n` +
+                       `Error: ${err.message}\n\n` +
                        `Workspace: ${workspace}\n\n` +
-                       `All commands will run inside this container.\n` +
-                       `Use \`/ocdc off\` to disable, or prefix with \`HOST:\` to run on host.\n\n` +
-                       `--- ocdc up output ---\n${result}`
-              } catch (err) {
-                return `Failed to start container: ${err.message}\n${err.stderr || ""}`
+                       `Would you like me to try starting it again? Call this tool again with create='true' to confirm, ` +
+                       `or run manually: \`ocdc up ${branch}\``
               }
+              
+              // User explicitly asked for start and it still failed
+              return `Failed to start container: ${err.message}\n${err.stderr || ""}`
             }
-            
-            return `Devcontainer for '${branch}' exists but is not running.\n\n` +
-                   `Workspace: ${workspace}\n\n` +
-                   `Would you like me to start it? Call this tool again with create='true' to confirm, ` +
-                   `or run manually: \`ocdc up ${branch}\``
           }
           
           // Save session state
