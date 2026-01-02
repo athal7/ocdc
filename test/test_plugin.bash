@@ -1239,6 +1239,15 @@ test_fresh_plugin_installation() {
   # Skip if opencode not installed
   if ! command -v opencode &>/dev/null; then
     echo "SKIP: opencode not installed"
+    export HOME="$saved_home"
+    return 0
+  fi
+  
+  # Skip if opencode hasn't been initialized (no node_modules with @opencode-ai/plugin)
+  # This happens in CI where opencode is installed but never run
+  if [[ ! -d "$real_home/.config/opencode/node_modules/@opencode-ai" ]]; then
+    echo "SKIP: opencode not initialized (run 'opencode' once to set up)"
+    export HOME="$saved_home"
     return 0
   fi
   
