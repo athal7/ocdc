@@ -26,6 +26,25 @@ jobs:
       - name: Install Node.js dependencies
         run: npm ci
 
+      - name: Install opencode
+        run: |
+          curl -fsSL https://opencode.ai/install | bash
+          echo "$HOME/.opencode/bin" >> $GITHUB_PATH
+
+      - name: Setup opencode plugin
+        run: |
+          mkdir -p ~/.config/opencode/plugins/ocdc/command
+          cp plugin/index.js plugin/helpers.js ~/.config/opencode/plugins/ocdc/
+          cp plugin/command/ocdc.md ~/.config/opencode/plugins/ocdc/command/
+          # Configure opencode with plugin and free model
+          mkdir -p ~/.config/opencode
+          cat > ~/.config/opencode/opencode.json << 'EOF'
+          {
+            "model": "opencode/gpt-5-nano",
+            "plugin": ["/home/runner/.config/opencode/plugins/ocdc"]
+          }
+          EOF
+
       - name: Run tests
         run: ./test/run_tests.bash
 
