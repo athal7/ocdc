@@ -18,6 +18,9 @@ jobs:
           sudo apt-get install -y jq
           sudo npm install -g @devcontainers/cli
 
+      - name: Install Node.js dependencies
+        run: npm ci
+
       - name: Install opencode
         run: |
           curl -fsSL https://opencode.ai/install | bash
