@@ -1,13 +1,13 @@
-name: Release
+name: CI
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: write
-  pull-requests: write
 
 jobs:
   test:
@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Needed for semantic-release
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -41,7 +41,6 @@ jobs:
           mkdir -p ~/.config/opencode/plugins/ocdc/command
           cp plugin/index.js plugin/helpers.js ~/.config/opencode/plugins/ocdc/
           cp plugin/command/ocdc.md ~/.config/opencode/plugins/ocdc/command/
-          # Configure opencode with plugin and free model
           mkdir -p ~/.config/opencode
           cat > ~/.config/opencode/opencode.json << 'EOF'
           {
@@ -55,34 +54,55 @@ jobs:
 
   release:
     needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    outputs:
+      new_release_published: ${{ steps.semantic.outputs.new_release_published }}
+      new_release_version: ${{ steps.semantic.outputs.new_release_version }}
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Needed for semantic-release
-          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '22'
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y jq
-          sudo npm install -g @devcontainers/cli
-
       - name: Install Node.js dependencies
         run: npm ci
 
-      - name: Create release tarball
-        run: |
-          mkdir -p dist
-          tar -czvf dist/devcontainer-multi.tar.gz bin/ install.sh README.md LICENSE
-
       - name: Run semantic-release
+        id: semantic
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm run semantic-release
+        run: npx semantic-release
+
+  update-homebrew:
+    needs: release
+    if: needs.release.outputs.new_release_published == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.HOMEBREW_APP_ID }}
+          private-key: ${{ secrets.HOMEBREW_APP_PRIVATE_KEY }}
+          owner: athal7
+          repositories: homebrew-tap
+
+      - name: Update Homebrew formula
+        uses: mislav/bump-homebrew-formula-action@v3
+        with:
+          formula-name: ocdc
+          homebrew-tap: athal7/homebrew-tap
+          tag-name: v${{ needs.release.outputs.new_release_version }}
+          push-to: athal7/homebrew-tap
+          base-branch: main
+          create-pullrequest: false
+          create-branch: false
+          commit-message: |
+            chore: bump {{formulaName}} to {{version}}
+        env:
+          COMMITTER_TOKEN: ${{ steps.app-token.outputs.token }}
