@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+#
+# ocdc-clean - Clean up orphaned clone directories
+#
+# Orphaned clones are directories in the clones folder that have no
+# associated tracked devcontainer instance in ports.json.
+#
+# Usage:
+#   ocdc clean              # Interactive - prompts for confirmation
+#   ocdc clean --dry-run    # Show what would be removed
+#   ocdc clean --force      # Remove without confirmation
+#
+# Options:
+#   --dry-run, -n      Show what would be removed without removing
+#   --force, -f        Remove without confirmation prompt
+#
+# Related commands:
+#   ocdc list    - List instances and orphaned clones
+#   ocdc down    - Stop devcontainer
+#   ocdc tui     - Interactive TUI
+
+set -euo pipefail
+
+# Source paths library
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../lib/ocdc-paths.bash"
+
+PORTS_FILE="$OCDC_PORTS_FILE"
+CLONES_DIR="$OCDC_CLONES_DIR"
+
+# Parse arguments
+DRY_RUN=false
+FORCE=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run|-n)
+      DRY_RUN=true
+      shift
+      ;;
+    --force|-f)
+      FORCE=true
+      shift
+      ;;
+    --help|-h)
+      sed -n '2,/^$/p' "$0" | sed 's/^# //' | sed 's/^#//'
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      exit 1
+      ;;
+  esac
+done
+
+log() { echo "[ocdc-clean] $*"; }
+
+# Get tracked workspaces from ports.json
+get_tracked_workspaces() {
+  if [[ -f "$PORTS_FILE" ]]; then
+    jq -r 'keys[]' "$PORTS_FILE" 2>/dev/null || true
+  fi
+}
+
+# Find orphaned clones
+find_orphans() {
+  local tracked
+  tracked=$(get_tracked_workspaces)
+  
+  if [[ ! -d "$CLONES_DIR" ]]; then
+    return
+  fi
+  
+  for repo_dir in "$CLONES_DIR"/*/; do
+    [[ -d "$repo_dir" ]] || continue
+    
+    for clone_dir in "$repo_dir"*/; do
+      [[ -d "$clone_dir" ]] || continue
+      clone_dir="${clone_dir%/}"
+      
+      # Resolve symlinks for consistent comparison (macOS /var -> /private/var)
+      local resolved_clone
+      resolved_clone=$(ocdc_resolve_path "$clone_dir")
+      
+      # Check if this clone is tracked (compare both original and resolved paths)
+      if ! echo "$tracked" | grep -qFx "$clone_dir" && \
+         ! echo "$tracked" | grep -qFx "$resolved_clone"; then
+        echo "$clone_dir"
+      fi
+    done
+  done
+}
+
+# Confirm action with user
+confirm() {
+  local message="$1"
+  
+  if [[ "$FORCE" == "true" ]]; then
+    return 0
+  fi
+  
+  echo -n "$message [y/N] "
+  read -r reply
+  
+  case "$reply" in
+    y|Y|yes|YES) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Main
+main() {
+  local orphans
+  orphans=$(find_orphans)
+  
+  if [[ -z "$orphans" ]]; then
+    log "No orphaned clones found."
+    exit 0
+  fi
+  
+  # Count orphans
+  local count=$(echo "$orphans" | wc -l | tr -d ' ')
+  
+  if [[ "$DRY_RUN" == "true" ]]; then
+    log "Would remove $count orphaned clone(s):"
+    echo "$orphans" | while read -r clone; do
+      local repo=$(basename "$(dirname "$clone")")
+      local branch=$(basename "$clone")
+      echo "  - $repo/$branch"
+      echo "    $clone"
+    done
+    exit 0
+  fi
+  
+  # Show what will be removed
+  log "Found $count orphaned clone(s):"
+  echo "$orphans" | while read -r clone; do
+    local repo=$(basename "$(dirname "$clone")")
+    local branch=$(basename "$clone")
+    echo "  - $repo/$branch"
+  done
+  echo ""
+  
+  if ! confirm "Remove all orphaned clones?"; then
+    log "Cancelled."
+    exit 0
+  fi
+  
+  # Remove orphans
+  local removed=0
+  echo "$orphans" | while read -r clone; do
+    local repo=$(basename "$(dirname "$clone")")
+    local branch=$(basename "$clone")
+    
+    rm -rf "$clone"
+    log "Removed: $repo/$branch"
+    
+    # Clean up empty parent directory
+    local parent=$(dirname "$clone")
+    if [[ -d "$parent" ]] && [[ -z "$(ls -A "$parent")" ]]; then
+      rmdir "$parent" 2>/dev/null || true
+    fi
+  done
+  
+  log "Done."
+}
+
+main

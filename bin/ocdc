@@ -15,6 +15,7 @@
 #   exec <cmd>              Execute command in container
 #   list                    List instances
 #   go [branch]             Navigate to clone
+#   clean                   Clean up orphaned clones
 #   version                 Show version
 #   help                    Show this help
 #
@@ -62,6 +63,7 @@ Commands:
   exec <cmd>         Execute command in running container
   list               List all instances and clones
   go [branch]        Navigate to an existing clone
+  clean              Clean up orphaned clones
   poll [options]     Poll sources and spawn OpenCode sessions
   plugin <cmd>       Manage OpenCode plugin (install/status/uninstall)
   version            Show version information
@@ -183,6 +185,9 @@ dispatch() {
       ;;
     go)
       exec "$LIB_DIR/ocdc-go" "$@"
+      ;;
+    clean)
+      exec "$LIB_DIR/ocdc-clean" "$@"
       ;;
     tui)
       exec "$LIB_DIR/ocdc-tui" "$@"
