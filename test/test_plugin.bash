@@ -1243,12 +1243,19 @@ test_fresh_plugin_installation() {
     return 0
   fi
   
-  # Skip if opencode hasn't been initialized (no node_modules with @opencode-ai/plugin)
+  # Initialize opencode if needed (installs @opencode-ai/plugin to node_modules)
   # This happens in CI where opencode is installed but never run
   if [[ ! -d "$real_home/.config/opencode/node_modules/@opencode-ai" ]]; then
-    echo "SKIP: opencode not initialized (run 'opencode' once to set up)"
-    export HOME="$saved_home"
-    return 0
+    # Run opencode once with no plugins to initialize node_modules
+    mkdir -p "$real_home/.config/opencode"
+    echo '{"plugin":[]}' > "$real_home/.config/opencode/opencode.json"
+    perl -e 'alarm 60; exec @ARGV' opencode run "say ok" >/dev/null 2>&1 || true
+    
+    if [[ ! -d "$real_home/.config/opencode/node_modules/@opencode-ai" ]]; then
+      echo "SKIP: opencode failed to initialize node_modules"
+      export HOME="$saved_home"
+      return 0
+    fi
   fi
   
   local plugin_dest="$real_home/.config/opencode/plugins/ocdc"
