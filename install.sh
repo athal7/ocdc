@@ -12,7 +12,7 @@ set -euo pipefail
 INSTALL_DIR="${1:-$HOME/.local/bin}"
 LIB_DIR="$INSTALL_DIR/../lib"
 REPO="athal7/ocdc"
-LIB_SCRIPTS="ocdc-up ocdc-down ocdc-list ocdc-exec ocdc-go ocdc-tui ocdc-paths.bash"
+LIB_SCRIPTS="ocdc-up ocdc-down ocdc-list ocdc-exec ocdc-go ocdc-tui ocdc-clean ocdc-poll ocdc-paths.bash ocdc-sessions.bash ocdc-poll-config.bash ocdc-poll-defaults.bash ocdc-poll-fetch.bash ocdc-poll-filter.bash ocdc-file-lock.bash ocdc-yaml.bash"
 
 echo "Installing ocdc to $INSTALL_DIR"
 
