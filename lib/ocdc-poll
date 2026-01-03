@@ -417,6 +417,7 @@ Commands:
   sessions            List active poll-created sessions
   attach <pattern>    Attach to a session by key or name
   logs [options]      View poll logs
+  clean [options]     Clean up orphaned sessions (alias for ocdc clean --sessions)
 
 Options:
   --once              Run one poll cycle and exit (default behavior)
@@ -434,6 +435,7 @@ Examples:
   ocdc poll sessions           # List active sessions
   ocdc poll attach issue-42    # Attach to a matching session
   ocdc poll logs --follow      # Follow poll logs
+  ocdc poll clean              # Clean up orphaned sessions
 EOF
 }
 
@@ -716,6 +718,7 @@ main() {
     sessions) shift; poll_sessions_cmd "$@"; exit $? ;;
     attach)   shift; poll_attach_cmd "$@"; exit $? ;;
     logs)     shift; poll_logs_cmd "$@"; exit $? ;;
+    clean)    shift; exec "$SCRIPT_DIR/ocdc-clean" --sessions "$@" ;;
   esac
   
   # Parse arguments (check for --help first, before checking dependencies)

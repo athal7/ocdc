@@ -9,8 +9,8 @@
 #   ↑/↓ or j/k         Move selection up/down
 #   Enter              Open/start selected instance
 #   n                  New devcontainer (prompts for branch)
-#   d                  Stop selected (with option to remove clone)
-#   D                  Stop all instances (with option to remove clones)
+#   d                  Delete selected (respects git safety)
+#   D                  Delete all safe orphans
 #   r                  Refresh list
 #   q                  Quit
 #
@@ -18,13 +18,14 @@
 #   ocdc up     - Start devcontainer
 #   ocdc down   - Stop devcontainer  
 #   ocdc list   - List instances (non-interactive)
-#   ocdc clean  - Clean up orphaned clones
+#   ocdc clean  - Clean up orphaned clones and sessions
 
 set -euo pipefail
 
 # Source paths library
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/../lib/ocdc-paths.bash"
+source "${SCRIPT_DIR}/ocdc-paths.bash"
+source "${SCRIPT_DIR}/ocdc-sessions.bash"
 
 CACHE_DIR="$OCDC_CACHE_DIR"
 PORTS_FILE="$OCDC_PORTS_FILE"
@@ -41,15 +42,17 @@ CYAN='\033[36m'
 GREEN='\033[32m'
 RED='\033[31m'
 YELLOW='\033[33m'
+BLUE='\033[34m'
 BG_BLUE='\033[44m'
 BG_RESET='\033[49m'
 
 # Layout configuration
-MIN_REPO_WIDTH=15
-MIN_BRANCH_WIDTH=15
-MAX_CONTENT_WIDTH=120
+MIN_REPO_WIDTH=12
+MIN_BRANCH_WIDTH=12
+MAX_CONTENT_WIDTH=130
 PORT_WIDTH=6
 STATUS_WIDTH=8
+GIT_WIDTH=10
 
 # Layout variables (set by calculate_layout)
 REPO_WIDTH=$MIN_REPO_WIDTH
@@ -58,18 +61,16 @@ LEFT_PADDING=2
 TOP_PADDING=0
 
 # Calculate layout based on terminal dimensions
-# Sets: REPO_WIDTH, BRANCH_WIDTH, LEFT_PADDING, TOP_PADDING
-# Args: cols [rows] [instance_count]
 calculate_layout() {
   local cols="${1:-$(tput cols 2>/dev/null || echo 80)}"
   local rows="${2:-$(tput lines 2>/dev/null || echo 24)}"
   local instance_count="${3:-0}"
   
-  # Fixed widths: port(6) + status(8) + spaces between columns(6) + selection marker(2)
-  local fixed_width=$((PORT_WIDTH + STATUS_WIDTH + 6 + 2))
+  # Fixed widths: port(6) + status(8) + git(10) + spaces between columns(8) + selection marker(2)
+  local fixed_width=$((PORT_WIDTH + STATUS_WIDTH + GIT_WIDTH + 8 + 2))
   
   # Available space for repo + branch columns
-  local available=$((cols - fixed_width - 4))  # 4 for minimal margins
+  local available=$((cols - fixed_width - 4))
   
   # Guard against negative available space on very narrow terminals
   [[ $available -lt 0 ]] && available=0
@@ -79,7 +80,7 @@ calculate_layout() {
     available=$((MAX_CONTENT_WIDTH - fixed_width))
   fi
   
-  # Distribute space: 40% to repo, 60% to branch (branch names are often longer)
+  # Distribute space: 40% to repo, 60% to branch
   REPO_WIDTH=$((available * 40 / 100))
   BRANCH_WIDTH=$((available * 60 / 100))
   
@@ -88,7 +89,7 @@ calculate_layout() {
   [[ $BRANCH_WIDTH -lt $MIN_BRANCH_WIDTH ]] && BRANCH_WIDTH=$MIN_BRANCH_WIDTH
   
   # Calculate horizontal centering padding for wide terminals
-  local content_width=$((PORT_WIDTH + REPO_WIDTH + BRANCH_WIDTH + STATUS_WIDTH + 6))
+  local content_width=$((PORT_WIDTH + REPO_WIDTH + BRANCH_WIDTH + STATUS_WIDTH + GIT_WIDTH + 8))
   if [[ $cols -gt $((content_width + 4)) ]]; then
     LEFT_PADDING=$(( (cols - content_width) / 2 ))
   else
@@ -96,12 +97,11 @@ calculate_layout() {
   fi
   
   # Calculate vertical centering
-  # Content height: header(2) + table_header(2) + instances + path(2) + footer(4)
   local content_height=$((2 + 2 + instance_count + 2 + 4))
-  [[ $instance_count -eq 0 ]] && content_height=10  # Empty state
+  [[ $instance_count -eq 0 ]] && content_height=10
   
   if [[ $rows -gt $((content_height + 4)) ]]; then
-    TOP_PADDING=$(( (rows - content_height) / 3 ))  # 1/3 from top looks better than centered
+    TOP_PADDING=$(( (rows - content_height) / 3 ))
   else
     TOP_PADDING=0
   fi
@@ -124,17 +124,69 @@ get_tracked_workspaces() {
   fi
 }
 
-# Load all instances (tracked containers + orphaned clones)
+# Get workspaces that have active sessions
+get_session_workspaces() {
+  local session_name poll_config workspace
+  while IFS= read -r session_name; do
+    [[ -z "$session_name" ]] && continue
+    poll_config=$(tmux show-environment -t "$session_name" 2>/dev/null | grep '^OCDC_POLL_CONFIG=' | cut -d= -f2- || true)
+    [[ -z "$poll_config" ]] && continue
+    workspace=$(tmux show-environment -t "$session_name" 2>/dev/null | grep '^OCDC_WORKSPACE=' | cut -d= -f2- || true)
+    [[ -n "$workspace" ]] && echo "$workspace"
+  done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null)
+}
+
+# Format git status for display
+format_git_status() {
+  local workspace="$1"
+  
+  if [[ ! -d "$workspace" ]]; then
+    echo "-"
+    return
+  fi
+  
+  local git_info
+  git_info=$(ocdc_get_git_status "$workspace" 2>/dev/null || echo '{"clean":true,"pushed":true,"ahead":0,"is_git":false}')
+  
+  local is_git clean pushed ahead
+  is_git=$(echo "$git_info" | jq -r '.is_git')
+  
+  if [[ "$is_git" == "false" ]]; then
+    echo "-"
+    return
+  fi
+  
+  clean=$(echo "$git_info" | jq -r '.clean')
+  pushed=$(echo "$git_info" | jq -r '.pushed')
+  ahead=$(echo "$git_info" | jq -r '.ahead')
+  
+  if [[ "$clean" == "false" ]]; then
+    echo "dirty"
+  elif [[ "$pushed" == "false" ]]; then
+    echo "↑$ahead"
+  else
+    echo "clean"
+  fi
+}
+
+# Load all instances (tracked containers + sessions + orphaned clones)
 load_instances() {
-  TYPES=()        # "container" or "orphan"
+  TYPES=()        # "container", "session", or "orphan"
   PORTS=()
   REPOS=()
   BRANCHES=()
   STATUSES=()
   WORKSPACES=()
+  GIT_STATUSES=()
+  SESSIONS=()     # tmux session name (empty for non-sessions)
+  
+  local tracked session_ws
+  tracked=$(get_tracked_workspaces)
+  session_ws=$(get_session_workspaces)
   
   # Load tracked containers from ports.json
   if [[ -f "$PORTS_FILE" ]]; then
+    local port repo branch workspace
     while IFS=$'\t' read -r port repo branch workspace; do
       [[ -n "$port" ]] || continue
       TYPES+=("container")
@@ -142,6 +194,8 @@ load_instances() {
       REPOS+=("$repo")
       BRANCHES+=("$branch")
       WORKSPACES+=("$workspace")
+      SESSIONS+=("")
+      GIT_STATUSES+=("$(format_git_status "$workspace")")
       if is_port_active "$port"; then
         STATUSES+=("UP")
       else
@@ -150,31 +204,73 @@ load_instances() {
     done < <(jq -r 'to_entries[] | "\(.value.port)\t\(.value.repo)\t\(.value.branch)\t\(.key)"' "$PORTS_FILE" 2>/dev/null)
   fi
   
-  # Load orphaned clones (exist on disk but not tracked)
-  local tracked
-  tracked=$(get_tracked_workspaces)
+  # Load tmux sessions (that aren't tracked as containers)
+  local session_name poll_config workspace branch repo
+  while IFS= read -r session_name; do
+    [[ -z "$session_name" ]] && continue
+    
+    poll_config=$(tmux show-environment -t "$session_name" 2>/dev/null | grep '^OCDC_POLL_CONFIG=' | cut -d= -f2- || true)
+    [[ -z "$poll_config" ]] && continue
+    
+    workspace=$(tmux show-environment -t "$session_name" 2>/dev/null | grep '^OCDC_WORKSPACE=' | cut -d= -f2- || true)
+    branch=$(tmux show-environment -t "$session_name" 2>/dev/null | grep '^OCDC_BRANCH=' | cut -d= -f2- || true)
+    
+    # Skip if this workspace is already tracked as a container
+    if echo "$tracked" | grep -qFx "$workspace" 2>/dev/null; then
+      continue
+    fi
+    
+    repo=""
+    if [[ -n "$workspace" ]]; then
+      repo=$(basename "$(dirname "$workspace")")
+    fi
+    
+    TYPES+=("session")
+    PORTS+=("-")
+    REPOS+=("$repo")
+    BRANCHES+=("$branch")
+    WORKSPACES+=("$workspace")
+    SESSIONS+=("$session_name")
+    
+    if [[ ! -d "$workspace" ]]; then
+      STATUSES+=("ORPHAN")
+      GIT_STATUSES+=("-")
+    else
+      STATUSES+=("SESSION")
+      GIT_STATUSES+=("$(format_git_status "$workspace")")
+    fi
+  done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null)
   
+  # Load orphaned clones (exist on disk but not tracked and no session)
   if [[ -d "$CLONES_DIR" ]]; then
+    local repo_dir repo_name clone_dir branch_name
     for repo_dir in "$CLONES_DIR"/*/; do
       [[ -d "$repo_dir" ]] || continue
-      local repo_name=$(basename "$repo_dir")
+      repo_name=$(basename "$repo_dir")
       
       for clone_dir in "$repo_dir"*/; do
         [[ -d "$clone_dir" ]] || continue
         clone_dir="${clone_dir%/}"
         
         # Skip if tracked
-        if echo "$tracked" | grep -qFx "$clone_dir"; then
+        if echo "$tracked" | grep -qFx "$clone_dir" 2>/dev/null; then
           continue
         fi
         
-        local branch_name=$(basename "$clone_dir")
+        # Skip if has a session
+        if echo "$session_ws" | grep -qFx "$clone_dir" 2>/dev/null; then
+          continue
+        fi
+        
+        branch_name=$(basename "$clone_dir")
         TYPES+=("orphan")
         PORTS+=("-")
         REPOS+=("$repo_name")
         BRANCHES+=("$branch_name")
         STATUSES+=("ORPHAN")
         WORKSPACES+=("$clone_dir")
+        GIT_STATUSES+=("$(format_git_status "$clone_dir")")
+        SESSIONS+=("")
       done
     done
   fi
@@ -196,7 +292,7 @@ make_separator() {
   echo "$sep"
 }
 
-# Get terminal dimensions (prefer stty over tput for accuracy)
+# Get terminal dimensions
 get_terminal_size() {
   local size
   if size=$(stty size 2>/dev/null); then
@@ -216,7 +312,6 @@ draw_screen() {
   local rows=${term_size%% *}
   local cols=${term_size##* }
   
-  # Calculate responsive layout
   calculate_layout "$cols" "$rows" "${#TYPES[@]}"
   local pad=$(make_padding $LEFT_PADDING)
   
@@ -233,15 +328,15 @@ draw_screen() {
   echo ""
   
   if [[ ${#TYPES[@]} -eq 0 ]]; then
-    echo "${pad}No devcontainer instances or clones found."
+    echo "${pad}No devcontainer instances, clones, or sessions found."
     echo ""
     echo -e "${pad}${DIM}Press${RESET} ${BOLD}n${RESET} ${DIM}to create a new devcontainer${RESET}"
   else
     # Table header with dynamic widths
-    printf "${pad}${BOLD}%-${PORT_WIDTH}s  %-${REPO_WIDTH}s  %-${BRANCH_WIDTH}s  %-${STATUS_WIDTH}s${RESET}\n" \
-      "PORT" "REPO" "BRANCH" "STATUS"
-    printf "${pad}${DIM}%-${PORT_WIDTH}s  %-${REPO_WIDTH}s  %-${BRANCH_WIDTH}s  %-${STATUS_WIDTH}s${RESET}\n" \
-      "$(make_separator $PORT_WIDTH)" "$(make_separator $REPO_WIDTH)" "$(make_separator $BRANCH_WIDTH)" "$(make_separator $STATUS_WIDTH)"
+    printf "${pad}${BOLD}%-${PORT_WIDTH}s  %-${REPO_WIDTH}s  %-${BRANCH_WIDTH}s  %-${STATUS_WIDTH}s  %-${GIT_WIDTH}s${RESET}\n" \
+      "PORT" "REPO" "BRANCH" "STATUS" "GIT"
+    printf "${pad}${DIM}%-${PORT_WIDTH}s  %-${REPO_WIDTH}s  %-${BRANCH_WIDTH}s  %-${STATUS_WIDTH}s  %-${GIT_WIDTH}s${RESET}\n" \
+      "$(make_separator $PORT_WIDTH)" "$(make_separator $REPO_WIDTH)" "$(make_separator $BRANCH_WIDTH)" "$(make_separator $STATUS_WIDTH)" "$(make_separator $GIT_WIDTH)"
     
     # Instances
     for i in "${!TYPES[@]}"; do
@@ -257,9 +352,20 @@ draw_screen() {
       # Status color
       local status_color=""
       case "${STATUSES[$i]}" in
-        UP)     status_color="${GREEN}" ;;
-        DOWN)   status_color="${RED}" ;;
-        ORPHAN) status_color="${YELLOW}" ;;
+        UP)      status_color="${GREEN}" ;;
+        DOWN)    status_color="${RED}" ;;
+        SESSION) status_color="${BLUE}" ;;
+        ORPHAN)  status_color="${YELLOW}" ;;
+      esac
+      
+      # Git status color
+      local git_color=""
+      local git_val="${GIT_STATUSES[$i]}"
+      case "$git_val" in
+        clean) git_color="${GREEN}" ;;
+        dirty) git_color="${RED}" ;;
+        ↑*)    git_color="${YELLOW}" ;;
+        *)     git_color="${DIM}" ;;
       esac
       
       # Truncate long values to fit columns
@@ -268,27 +374,34 @@ draw_screen() {
       [[ ${#repo} -gt $REPO_WIDTH ]] && repo="${repo:0:$((REPO_WIDTH - 3))}..."
       [[ ${#branch} -gt $BRANCH_WIDTH ]] && branch="${branch:0:$((BRANCH_WIDTH - 3))}..."
       
-      printf "${prefix}%-${PORT_WIDTH}s  %-${REPO_WIDTH}s  %-${BRANCH_WIDTH}s  ${status_color}%-${STATUS_WIDTH}s${RESET}${suffix}\n" \
-        "${PORTS[$i]}" "$repo" "$branch" "${STATUSES[$i]}"
+      printf "${prefix}%-${PORT_WIDTH}s  %-${REPO_WIDTH}s  %-${BRANCH_WIDTH}s  ${status_color}%-${STATUS_WIDTH}s${RESET}  ${git_color}%-${GIT_WIDTH}s${RESET}${suffix}\n" \
+        "${PORTS[$i]}" "$repo" "$branch" "${STATUSES[$i]}" "$git_val"
     done
     
-    # Show workspace path for selected item
+    # Show workspace path and session for selected item
     echo ""
+    local selected_session="${SESSIONS[$SELECTED]}"
+    if [[ -n "$selected_session" ]]; then
+      echo -e "${pad}${DIM}Session: ${selected_session}${RESET}"
+    fi
     echo -e "${pad}${DIM}Path: ${WORKSPACES[$SELECTED]}${RESET}"
   fi
   
   # Footer with keybindings
-  local footer_width=$((PORT_WIDTH + REPO_WIDTH + BRANCH_WIDTH + STATUS_WIDTH + 6))
+  local footer_width=$((PORT_WIDTH + REPO_WIDTH + BRANCH_WIDTH + STATUS_WIDTH + GIT_WIDTH + 8))
   echo ""
   echo -e "${pad}${DIM}$(make_separator $footer_width)${RESET}"
-  echo -e "${pad}${BOLD}n${RESET}${DIM}ew${RESET}  ${BOLD}d${RESET}${DIM}elete${RESET}  ${BOLD}D${RESET}${DIM}elete-all${RESET}  ${BOLD}r${RESET}${DIM}efresh${RESET}  ${BOLD}q${RESET}${DIM}uit${RESET}"
+  echo -e "${pad}${BOLD}n${RESET}${DIM}ew${RESET}  ${BOLD}d${RESET}${DIM}elete${RESET}  ${BOLD}D${RESET}${DIM}elete-all-safe${RESET}  ${BOLD}r${RESET}${DIM}efresh${RESET}  ${BOLD}q${RESET}${DIM}uit${RESET}"
   
   if [[ ${#TYPES[@]} -gt 0 ]]; then
     local status="${STATUSES[$SELECTED]}"
+    local type="${TYPES[$SELECTED]}"
     if [[ "$status" == "UP" ]]; then
       echo -e "${pad}${DIM}↑/↓ navigate  Enter=open in VS Code${RESET}"
     elif [[ "$status" == "DOWN" ]]; then
       echo -e "${pad}${DIM}↑/↓ navigate  Enter=start container${RESET}"
+    elif [[ "$type" == "session" ]]; then
+      echo -e "${pad}${DIM}↑/↓ navigate  Enter=attach to session${RESET}"
     else
       echo -e "${pad}${DIM}↑/↓ navigate  Enter=open directory${RESET}"
     fi
@@ -323,6 +436,17 @@ open_workspace() {
   local idx=$1
   local workspace="${WORKSPACES[$idx]}"
   local status="${STATUSES[$idx]}"
+  local type="${TYPES[$idx]}"
+  local session="${SESSIONS[$idx]}"
+  
+  # If it's a session, attach to it
+  if [[ "$type" == "session" ]] && [[ -n "$session" ]]; then
+    tput cnorm
+    clear
+    echo "Attaching to session: $session"
+    echo ""
+    exec tmux attach -t "$session"
+  fi
   
   # If container is DOWN, start it first then open
   if [[ "$status" == "DOWN" ]]; then
@@ -333,7 +457,6 @@ open_workspace() {
     (cd "$workspace" && ocdc up --no-open) 2>&1 || true
     load_instances
     tput civis
-    # Fall through to open it
   fi
   
   # Open in VS Code or show cd command
@@ -350,30 +473,88 @@ open_workspace() {
   fi
 }
 
-# Stop a container with option to remove clone
+# Stop/remove an instance with git safety check
 stop_instance() {
   local idx=$1
   local workspace="${WORKSPACES[$idx]}"
   local type="${TYPES[$idx]}"
   local repo="${REPOS[$idx]}"
   local branch="${BRANCHES[$idx]}"
+  local git_status="${GIT_STATUSES[$idx]}"
+  local session="${SESSIONS[$idx]}"
   
   clear
   tput cnorm
   
-  if [[ "$type" == "orphan" ]]; then
-    # Orphan - just offer to remove the clone
-    echo -e "Remove orphaned clone ${BOLD}${repo}/${branch}${RESET}?"
-    echo -e "${DIM}Path: ${workspace}${RESET}"
+  # Check git safety
+  local is_safe=true
+  local unsafe_reason=""
+  
+  if [[ -d "$workspace" ]] && ! ocdc_is_safe_to_remove "$workspace"; then
+    is_safe=false
+    if [[ "$git_status" == "dirty" ]]; then
+      unsafe_reason="uncommitted changes"
+    else
+      unsafe_reason="unpushed commits"
+    fi
+  fi
+  
+  if [[ "$type" == "session" ]]; then
+    # Session - kill it and optionally remove clone
+    echo -e "Kill session ${BOLD}${session}${RESET}?"
+    echo -e "${DIM}Workspace: ${workspace}${RESET}"
+    
+    if [[ "$is_safe" == "false" ]]; then
+      echo -e "${RED}Warning: Workspace has ${unsafe_reason}!${RESET}"
+    fi
+    
     echo ""
-    if confirm "Remove clone directory?"; then
-      rm -rf "$workspace"
-      # Clean up empty parent
-      local parent=$(dirname "$workspace")
-      [[ -d "$parent" ]] && [[ -z "$(ls -A "$parent")" ]] && rmdir "$parent" 2>/dev/null || true
-      echo "  Removed."
+    if confirm "Kill session?"; then
+      ocdc_kill_session "$session"
+      echo "  Session killed."
+      
+      if [[ -d "$workspace" ]]; then
+        echo ""
+        if [[ "$is_safe" == "true" ]]; then
+          if confirm "Also remove the clone directory?"; then
+            rm -rf "$workspace"
+            local parent=$(dirname "$workspace")
+            [[ -d "$parent" ]] && [[ -z "$(ls -A "$parent")" ]] && rmdir "$parent" 2>/dev/null || true
+            echo "  Clone removed."
+          fi
+        else
+          echo -e "${DIM}Clone not removed (has ${unsafe_reason})${RESET}"
+        fi
+      fi
     else
       echo "  Cancelled."
+    fi
+  elif [[ "$type" == "orphan" ]]; then
+    # Orphan clone - offer to remove
+    echo -e "Remove orphaned clone ${BOLD}${repo}/${branch}${RESET}?"
+    echo -e "${DIM}Path: ${workspace}${RESET}"
+    
+    if [[ "$is_safe" == "false" ]]; then
+      echo -e "${RED}Warning: Workspace has ${unsafe_reason}!${RESET}"
+      echo ""
+      if confirm "Remove anyway? (DANGEROUS)"; then
+        rm -rf "$workspace"
+        local parent=$(dirname "$workspace")
+        [[ -d "$parent" ]] && [[ -z "$(ls -A "$parent")" ]] && rmdir "$parent" 2>/dev/null || true
+        echo "  Removed."
+      else
+        echo "  Cancelled."
+      fi
+    else
+      echo ""
+      if confirm "Remove clone directory?"; then
+        rm -rf "$workspace"
+        local parent=$(dirname "$workspace")
+        [[ -d "$parent" ]] && [[ -z "$(ls -A "$parent")" ]] && rmdir "$parent" 2>/dev/null || true
+        echo "  Removed."
+      else
+        echo "  Cancelled."
+      fi
     fi
   else
     # Container - stop it and optionally remove clone
@@ -383,11 +564,15 @@ stop_instance() {
     # If it's a clone, offer to remove it
     if [[ "$workspace" == "$CLONES_DIR"* ]]; then
       echo ""
-      if confirm "Also remove the clone directory?"; then
-        rm -rf "$workspace"
-        local parent=$(dirname "$workspace")
-        [[ -d "$parent" ]] && [[ -z "$(ls -A "$parent")" ]] && rmdir "$parent" 2>/dev/null || true
-        echo "  Clone removed."
+      if [[ "$is_safe" == "true" ]]; then
+        if confirm "Also remove the clone directory?"; then
+          rm -rf "$workspace"
+          local parent=$(dirname "$workspace")
+          [[ -d "$parent" ]] && [[ -z "$(ls -A "$parent")" ]] && rmdir "$parent" 2>/dev/null || true
+          echo "  Clone removed."
+        fi
+      else
+        echo -e "${DIM}Clone not removed (has ${unsafe_reason})${RESET}"
       fi
     fi
   fi
@@ -512,16 +697,15 @@ main() {
         fi
         ;;
       
-      # Stop all
+      # Delete all safe orphans
       D|X)
         clear
         tput cnorm
-        if confirm "Stop ALL containers?"; then
-          ocdc down --all || true
-          echo ""
-          if confirm "Also remove ALL clones?"; then
-            ocdc clean --force || true
-          fi
+        echo "This will clean up all safe orphans (clones + sessions)."
+        echo "Workspaces with uncommitted/unpushed changes will be skipped."
+        echo ""
+        if confirm "Clean all safe orphans?"; then
+          ocdc clean 2>&1 || true
         fi
         echo ""
         echo "Press any key to continue..."

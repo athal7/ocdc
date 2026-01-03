@@ -128,6 +128,90 @@ export_legacy_vars() {
   export DCMULTI_CLONES_DIR="$OCDC_CLONES_DIR"
 }
 
+# Get git status for a workspace directory
+# Returns JSON: {"clean": bool, "pushed": bool, "ahead": int}
+# For non-git directories or errors, returns safe defaults
+ocdc_get_git_status() {
+  local workspace="$1"
+  
+  # Non-existent directory - no git state
+  if [[ ! -d "$workspace" ]]; then
+    echo '{"clean": true, "pushed": true, "ahead": 0, "is_git": false}'
+    return 0
+  fi
+  
+  # Not a git repo
+  if ! git -C "$workspace" rev-parse --git-dir >/dev/null 2>&1; then
+    echo '{"clean": true, "pushed": true, "ahead": 0, "is_git": false}'
+    return 0
+  fi
+  
+  local clean=true
+  local pushed=true
+  local ahead=0
+  
+  # Check for uncommitted changes (staged or unstaged)
+  if ! git -C "$workspace" diff --quiet 2>/dev/null; then
+    clean=false
+  fi
+  if ! git -C "$workspace" diff --cached --quiet 2>/dev/null; then
+    clean=false
+  fi
+  
+  # Check for unpushed commits (only if we have an upstream)
+  local upstream
+  upstream=$(git -C "$workspace" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null || true)
+  
+  if [[ -n "$upstream" ]]; then
+    ahead=$(git -C "$workspace" rev-list --count '@{upstream}..HEAD' 2>/dev/null || echo "0")
+    if [[ "$ahead" -gt 0 ]]; then
+      pushed=false
+    fi
+  fi
+  
+  jq -n \
+    --argjson clean "$clean" \
+    --argjson pushed "$pushed" \
+    --argjson ahead "$ahead" \
+    '{clean: $clean, pushed: $pushed, ahead: $ahead, is_git: true}'
+}
+
+# Check if a workspace is safe to remove (no uncommitted or unpushed changes)
+# Returns 0 (true) if safe, 1 (false) if not safe
+ocdc_is_safe_to_remove() {
+  local workspace="$1"
+  
+  # Non-existent directory is safe
+  [[ ! -d "$workspace" ]] && return 0
+  
+  # Non-git directory is safe
+  if ! git -C "$workspace" rev-parse --git-dir >/dev/null 2>&1; then
+    return 0
+  fi
+  
+  # Check for uncommitted changes
+  if ! git -C "$workspace" diff --quiet 2>/dev/null; then
+    return 1  # Has uncommitted changes
+  fi
+  if ! git -C "$workspace" diff --cached --quiet 2>/dev/null; then
+    return 1  # Has staged changes
+  fi
+  
+  # Check for unpushed commits (only if we have an upstream)
+  local upstream
+  upstream=$(git -C "$workspace" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null || true)
+  
+  if [[ -n "$upstream" ]]; then
+    local ahead
+    ahead=$(git -C "$workspace" rev-list --count '@{upstream}..HEAD' 2>/dev/null || echo "0")
+    if [[ "$ahead" -gt 0 ]]; then
+      return 1  # Has unpushed commits
+    fi
+  fi
+  
+  return 0  # Safe to remove
+}
+
 # Export all paths
 export OCDC_CONFIG_DIR
 export OCDC_CACHE_DIR

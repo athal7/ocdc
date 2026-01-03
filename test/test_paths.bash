@@ -409,6 +409,226 @@ test_resolve_path_does_not_change_cwd() {
 }
 
 # =============================================================================
+# Git Safety Tests
+# =============================================================================
+
+# Helper to create a test git repo
+create_test_git_repo() {
+  local repo_dir="$1"
+  mkdir -p "$repo_dir"
+  cd "$repo_dir"
+  git init --quiet
+  git config user.email "test@test.com"
+  git config user.name "Test User"
+  echo "initial" > file.txt
+  git add file.txt
+  git commit --quiet -m "Initial commit"
+}
+
+test_is_safe_to_remove_clean_repo() {
+  source "$LIB_DIR/ocdc-paths.bash"
+  
+  local repo="$TEST_DIR/clean-repo"
+  create_test_git_repo "$repo"
+  
+  # Clean repo with no remote - should be safe (can't push anywhere)
+  if ! ocdc_is_safe_to_remove "$repo"; then
+    echo "Clean repo without remote should be safe to remove"
+    return 1
+  fi
+  return 0
+}
+
+test_is_safe_to_remove_dirty_repo() {
+  source "$LIB_DIR/ocdc-paths.bash"
+  
+  local repo="$TEST_DIR/dirty-repo"
+  create_test_git_repo "$repo"
+  
+  # Make uncommitted changes
+  echo "modified" >> "$repo/file.txt"
+  
+  if ocdc_is_safe_to_remove "$repo"; then
+    echo "Repo with uncommitted changes should NOT be safe to remove"
+    return 1
+  fi
+  return 0
+}
+
+test_is_safe_to_remove_staged_changes() {
+  source "$LIB_DIR/ocdc-paths.bash"
+  
+  local repo="$TEST_DIR/staged-repo"
+  create_test_git_repo "$repo"
+  
+  # Make staged changes
+  echo "new" > "$repo/newfile.txt"
+  git -C "$repo" add newfile.txt
+  
+  if ocdc_is_safe_to_remove "$repo"; then
+    echo "Repo with staged changes should NOT be safe to remove"
+    return 1
+  fi
+  return 0
+}
+
+test_is_safe_to_remove_unpushed_commits() {
+  source "$LIB_DIR/ocdc-paths.bash"
+  
+  # Create a "remote" repo
+  local remote="$TEST_DIR/remote-repo"
+  mkdir -p "$remote"
+  git init --bare --quiet "$remote"
+  
+  # Create local repo that tracks the remote
+  local repo="$TEST_DIR/local-repo"
+  create_test_git_repo "$repo"
+  git -C "$repo" remote add origin "$remote"
+  git -C "$repo" push --quiet -u origin main 2>/dev/null || git -C "$repo" push --quiet -u origin master 2>/dev/null
+  
+  # Make a new commit that isn't pushed
+  echo "new commit" >> "$repo/file.txt"
+  git -C "$repo" add file.txt
+  git -C "$repo" commit --quiet -m "Unpushed commit"
+  
+  if ocdc_is_safe_to_remove "$repo"; then
+    echo "Repo with unpushed commits should NOT be safe to remove"
+    return 1
+  fi
+  return 0
+}
+
+test_is_safe_to_remove_pushed_commits() {
+  source "$LIB_DIR/ocdc-paths.bash"
+  
+  # Create a "remote" repo
+  local remote="$TEST_DIR/remote-repo2"
+  mkdir -p "$remote"
+  git init --bare --quiet "$remote"
+  
+  # Create local repo that tracks the remote
+  local repo="$TEST_DIR/local-repo2"
+  create_test_git_repo "$repo"
+  git -C "$repo" remote add origin "$remote"
+  git -C "$repo" push --quiet -u origin main 2>/dev/null || git -C "$repo" push --quiet -u origin master 2>/dev/null
+  
+  # Everything is pushed - should be safe
+  if ! ocdc_is_safe_to_remove "$repo"; then
+    echo "Repo with all commits pushed should be safe to remove"
+    return 1
+  fi
+  return 0
+}
+
+test_is_safe_to_remove_nonexistent_dir() {
+  source "$LIB_DIR/ocdc-paths.bash"
+  
+  # Non-existent directory should be safe (nothing to lose)
+  if ! ocdc_is_safe_to_remove "/nonexistent/path/xyz"; then
+    echo "Non-existent directory should be safe to remove"
+    return 1
+  fi
+  return 0
+}
+
+test_is_safe_to_remove_non_git_dir() {
+  source "$LIB_DIR/ocdc-paths.bash"
+  
+  local dir="$TEST_DIR/not-a-repo"
+  mkdir -p "$dir"
+  echo "some file" > "$dir/file.txt"
+  
+  # Non-git directory should be safe (no git state to preserve)
+  if ! ocdc_is_safe_to_remove "$dir"; then
+    echo "Non-git directory should be safe to remove"
+    return 1
+  fi
+  return 0
+}
+
+test_get_git_status_returns_json() {
+  source "$LIB_DIR/ocdc-paths.bash"
+  
+  local repo="$TEST_DIR/status-repo"
+  create_test_git_repo "$repo"
+  
+  local status
+  status=$(ocdc_get_git_status "$repo")
+  
+  # Should be valid JSON
+  if ! echo "$status" | jq -e '.' >/dev/null 2>&1; then
+    echo "Should return valid JSON"
+    echo "Got: $status"
+    return 1
+  fi
+  
+  # Should have expected fields
+  assert_contains "$status" '"clean"'
+  assert_contains "$status" '"pushed"'
+}
+
+test_get_git_status_dirty() {
+  source "$LIB_DIR/ocdc-paths.bash"
+  
+  local repo="$TEST_DIR/status-dirty"
+  create_test_git_repo "$repo"
+  echo "dirty" >> "$repo/file.txt"
+  
+  local status
+  status=$(ocdc_get_git_status "$repo")
+  
+  local clean
+  clean=$(echo "$status" | jq -r '.clean')
+  
+  if [[ "$clean" != "false" ]]; then
+    echo "Dirty repo should have clean=false"
+    echo "Got: $status"
+    return 1
+  fi
+  return 0
+}
+
+test_get_git_status_unpushed() {
+  source "$LIB_DIR/ocdc-paths.bash"
+  
+  # Create a "remote" repo
+  local remote="$TEST_DIR/remote-status"
+  mkdir -p "$remote"
+  git init --bare --quiet "$remote"
+  
+  # Create local repo that tracks the remote
+  local repo="$TEST_DIR/local-status"
+  create_test_git_repo "$repo"
+  git -C "$repo" remote add origin "$remote"
+  git -C "$repo" push --quiet -u origin main 2>/dev/null || git -C "$repo" push --quiet -u origin master 2>/dev/null
+  
+  # Make a new commit that isn't pushed
+  echo "new" >> "$repo/file.txt"
+  git -C "$repo" add file.txt
+  git -C "$repo" commit --quiet -m "Unpushed"
+  
+  local status
+  status=$(ocdc_get_git_status "$repo")
+  
+  local pushed ahead
+  pushed=$(echo "$status" | jq -r '.pushed')
+  ahead=$(echo "$status" | jq -r '.ahead')
+  
+  if [[ "$pushed" != "false" ]]; then
+    echo "Repo with unpushed commits should have pushed=false"
+    echo "Got: $status"
+    return 1
+  fi
+  
+  if [[ "$ahead" != "1" ]]; then
+    echo "Should be 1 commit ahead"
+    echo "Got: $status"
+    return 1
+  fi
+  return 0
+}
+
+# =============================================================================
 # Run Tests
 # =============================================================================
 
@@ -439,6 +659,26 @@ for test_func in \
   test_resolve_path_handles_relative_paths \
   test_resolve_path_resolves_nested_symlinks \
   test_resolve_path_does_not_change_cwd
+do
+  setup
+  run_test "${test_func#test_}" "$test_func"
+  teardown
+done
+
+echo ""
+echo "Git Safety Tests:"
+
+for test_func in \
+  test_is_safe_to_remove_clean_repo \
+  test_is_safe_to_remove_dirty_repo \
+  test_is_safe_to_remove_staged_changes \
+  test_is_safe_to_remove_unpushed_commits \
+  test_is_safe_to_remove_pushed_commits \
+  test_is_safe_to_remove_nonexistent_dir \
+  test_is_safe_to_remove_non_git_dir \
+  test_get_git_status_returns_json \
+  test_get_git_status_dirty \
+  test_get_git_status_unpushed
 do
   setup
   run_test "${test_func#test_}" "$test_func"

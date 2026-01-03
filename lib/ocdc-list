@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 #
-# ocdc-list - List devcontainer instances and clones
+# ocdc-list - List devcontainer instances, clones, and sessions
+#
+# Shows a unified view of all workspaces: tracked containers, orphaned clones,
+# and tmux sessions created by ocdc poll.
 #
 # Usage:
-#   ocdc list           # List all tracked instances and orphaned clones
+#   ocdc list           # List all instances, clones, and sessions
 #   ocdc list --json    # Output as JSON
 #   ocdc list --active  # Only show instances with running containers
 #
@@ -11,13 +14,14 @@
 #   ocdc up      - Start devcontainer
 #   ocdc down    - Stop devcontainer
 #   ocdc go      - Navigate to clone
-#   ocdc clean   - Clean up orphaned clones
+#   ocdc clean   - Clean up orphaned clones and sessions
 
 set -euo pipefail
 
 # Source paths library
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/../lib/ocdc-paths.bash"
+source "${SCRIPT_DIR}/ocdc-paths.bash"
+source "${SCRIPT_DIR}/ocdc-sessions.bash"
 
 CACHE_DIR="$OCDC_CACHE_DIR"
 PORTS_FILE="$OCDC_PORTS_FILE"
@@ -60,32 +64,127 @@ get_tracked_workspaces() {
   fi
 }
 
+# Get workspaces that have active sessions
+get_session_workspaces() {
+  local session_name poll_config workspace
+  while IFS= read -r session_name; do
+    [[ -z "$session_name" ]] && continue
+    poll_config=$(tmux show-environment -t "$session_name" 2>/dev/null | grep '^OCDC_POLL_CONFIG=' | cut -d= -f2- || true)
+    [[ -z "$poll_config" ]] && continue
+    
+    workspace=$(tmux show-environment -t "$session_name" 2>/dev/null | grep '^OCDC_WORKSPACE=' | cut -d= -f2- || true)
+    [[ -n "$workspace" ]] && echo "$workspace"
+  done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null)
+}
+
+# Format git status for display
+format_git_status() {
+  local workspace="$1"
+  local git_info
+  git_info=$(ocdc_get_git_status "$workspace" 2>/dev/null || echo '{"clean":true,"pushed":true,"ahead":0}')
+  
+  local clean pushed ahead
+  clean=$(echo "$git_info" | jq -r '.clean')
+  pushed=$(echo "$git_info" | jq -r '.pushed')
+  ahead=$(echo "$git_info" | jq -r '.ahead')
+  
+  if [[ "$clean" == "false" ]]; then
+    echo "dirty"
+  elif [[ "$pushed" == "false" ]]; then
+    echo "clean ↑$ahead"
+  else
+    echo "clean"
+  fi
+}
+
 # Get current workspace for highlighting (resolve symlinks for consistent comparison)
 CURRENT_WS=""
 if git rev-parse --git-dir >/dev/null 2>&1; then
   CURRENT_WS=$(ocdc_resolve_path "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")
 fi
 
-if [[ "$JSON_OUTPUT" == "true" ]]; then
-  # Build combined JSON output
-  result="[]"
+# JSON output
+output_json() {
+  local result="[]"
+  local tracked_ws session_ws
+  tracked_ws=$(get_tracked_workspaces)
+  session_ws=$(get_session_workspaces)
   
   # Add tracked containers
   if [[ -f "$PORTS_FILE" ]]; then
-    tracked=$(jq 'to_entries | map({
-      type: "container",
-      workspace: .key,
-      port: .value.port,
-      repo: .value.repo,
-      branch: .value.branch,
-      started: .value.started
-    })' "$PORTS_FILE")
-    result=$(echo "$result" "$tracked" | jq -s 'add')
+    local port repo branch workspace status git_status entry
+    while IFS=$'\t' read -r port repo branch workspace; do
+      [[ -n "$port" ]] || continue
+      
+      status="down"
+      is_port_active "$port" && status="up"
+      
+      git_status=$(ocdc_get_git_status "$workspace" 2>/dev/null || echo '{"clean":true,"pushed":true,"ahead":0,"is_git":false}')
+      
+      entry=$(jq -n \
+        --arg type "container" \
+        --arg workspace "$workspace" \
+        --argjson port "$port" \
+        --arg repo "$repo" \
+        --arg branch "$branch" \
+        --arg status "$status" \
+        --argjson git "$git_status" \
+        '{type: $type, workspace: $workspace, port: $port, repo: $repo, branch: $branch, status: $status, git: $git}')
+      
+      result=$(echo "$result" "[$entry]" | jq -s 'add')
+    done < <(jq -r 'to_entries[] | "\(.value.port)\t\(.value.repo)\t\(.value.branch)\t\(.key)"' "$PORTS_FILE" 2>/dev/null)
   fi
   
-  # Add orphaned clones
+  # Add sessions (that aren't already tracked as containers)
+  if [[ "$ACTIVE_ONLY" != "true" ]]; then
+    local session_name poll_config workspace branch item_key repo status git_status entry
+    while IFS= read -r session_name; do
+      [[ -z "$session_name" ]] && continue
+      
+      poll_config=$(tmux show-environment -t "$session_name" 2>/dev/null | grep '^OCDC_POLL_CONFIG=' | cut -d= -f2- || true)
+      [[ -z "$poll_config" ]] && continue
+      
+      workspace=$(tmux show-environment -t "$session_name" 2>/dev/null | grep '^OCDC_WORKSPACE=' | cut -d= -f2- || true)
+      branch=$(tmux show-environment -t "$session_name" 2>/dev/null | grep '^OCDC_BRANCH=' | cut -d= -f2- || true)
+      item_key=$(tmux show-environment -t "$session_name" 2>/dev/null | grep '^OCDC_ITEM_KEY=' | cut -d= -f2- || true)
+      
+      # Skip if this workspace is already tracked as a container
+      if echo "$tracked_ws" | grep -qFx "$workspace" 2>/dev/null; then
+        continue
+      fi
+      
+      repo=""
+      if [[ -n "$workspace" ]]; then
+        repo=$(basename "$(dirname "$workspace")")
+      fi
+      
+      status="session"
+      [[ ! -d "$workspace" ]] && status="orphan"
+      
+      git_status='{"clean":true,"pushed":true,"ahead":0,"is_git":false}'
+      if [[ -d "$workspace" ]]; then
+        git_status=$(ocdc_get_git_status "$workspace" 2>/dev/null || echo "$git_status")
+      fi
+      
+      entry=$(jq -n \
+        --arg type "session" \
+        --arg workspace "$workspace" \
+        --arg session "$session_name" \
+        --arg repo "$repo" \
+        --arg branch "$branch" \
+        --arg status "$status" \
+        --arg poll_config "$poll_config" \
+        --arg item_key "$item_key" \
+        --argjson git "$git_status" \
+        '{type: $type, workspace: $workspace, session: $session, port: null, repo: $repo, branch: $branch, status: $status, poll_config: $poll_config, item_key: $item_key, git: $git}')
+      
+      result=$(echo "$result" "[$entry]" | jq -s 'add')
+    done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null)
+  fi
+  
+  # Add orphaned clones (that aren't tracked and don't have sessions)
   if [[ -d "$CLONES_DIR" ]] && [[ "$ACTIVE_ONLY" != "true" ]]; then
-    tracked_ws=$(get_tracked_workspaces)
+    local repo_dir repo_name clone_dir branch_name git_status entry
     for repo_dir in "$CLONES_DIR"/*/; do
       [[ -d "$repo_dir" ]] || continue
       repo_name=$(basename "$repo_dir")
@@ -94,71 +193,124 @@ if [[ "$JSON_OUTPUT" == "true" ]]; then
         [[ -d "$clone_dir" ]] || continue
         clone_dir="${clone_dir%/}"
         
-        if ! echo "$tracked_ws" | grep -qFx "$clone_dir"; then
-          branch_name=$(basename "$clone_dir")
-          orphan=$(jq -n --arg ws "$clone_dir" --arg repo "$repo_name" --arg branch "$branch_name" '{
-            type: "orphan",
-            workspace: $ws,
-            port: null,
-            repo: $repo,
-            branch: $branch,
-            started: null
-          }')
-          result=$(echo "$result" "[$orphan]" | jq -s 'add')
+        # Skip if tracked as container
+        if echo "$tracked_ws" | grep -qFx "$clone_dir" 2>/dev/null; then
+          continue
         fi
+        
+        # Skip if has a session
+        if echo "$session_ws" | grep -qFx "$clone_dir" 2>/dev/null; then
+          continue
+        fi
+        
+        branch_name=$(basename "$clone_dir")
+        git_status=$(ocdc_get_git_status "$clone_dir" 2>/dev/null || echo '{"clean":true,"pushed":true,"ahead":0,"is_git":false}')
+        
+        entry=$(jq -n \
+          --arg type "orphan" \
+          --arg workspace "$clone_dir" \
+          --arg repo "$repo_name" \
+          --arg branch "$branch_name" \
+          --argjson git "$git_status" \
+          '{type: $type, workspace: $workspace, port: null, repo: $repo, branch: $branch, status: "orphan", git: $git}')
+        
+        result=$(echo "$result" "[$entry]" | jq -s 'add')
       done
     done
   fi
   
   echo "$result"
-else
-  # Table output
-  has_output=false
+}
+
+# Table output
+output_table() {
+  local has_output=false
+  local tracked_ws session_ws
+  tracked_ws=$(get_tracked_workspaces)
+  session_ws=$(get_session_workspaces)
   
-  # Tracked containers
-  if [[ -f "$PORTS_FILE" ]] && [[ $(jq 'length' "$PORTS_FILE") -gt 0 ]]; then
-    echo ""
-    printf "%-6s  %-20s  %-16s  %-8s  %s\n" "PORT" "REPO" "BRANCH" "STATUS" "WORKSPACE"
-    printf "%-6s  %-20s  %-16s  %-8s  %s\n" "──────" "────────────────────" "────────────────" "────────" "─────────"
-    
-    jq -r 'to_entries[] | "\(.value.port)\t\(.value.repo)\t\(.value.branch)\t\(.key)"' "$PORTS_FILE" | \
+  # Collect all items into arrays for unified display
+  declare -a PORTS=()
+  declare -a REPOS=()
+  declare -a BRANCHES=()
+  declare -a STATUSES=()
+  declare -a WORKSPACES=()
+  declare -a GIT_STATUSES=()
+  declare -a SESSIONS=()
+  
+  # Add tracked containers
+  if [[ -f "$PORTS_FILE" ]] && [[ $(jq 'length' "$PORTS_FILE" 2>/dev/null || echo 0) -gt 0 ]]; then
+    local port repo branch workspace status git_display
     while IFS=$'\t' read -r port repo branch workspace; do
-      # Check status
+      [[ -n "$port" ]] || continue
+      
       if is_port_active "$port"; then
-        status="\033[32mUP\033[0m    "
+        status="UP"
       else
-        status="\033[31mDOWN\033[0m  "
+        status="DOWN"
       fi
       
       # Skip if filtering for active only
-      if [[ "$ACTIVE_ONLY" == "true" ]]; then
-        is_port_active "$port" || continue
+      if [[ "$ACTIVE_ONLY" == "true" ]] && [[ "$status" != "UP" ]]; then
+        continue
       fi
       
-      # Highlight current workspace
-      if [[ "$workspace" == "$CURRENT_WS" ]]; then
-        marker="* "
-      else
-        marker="  "
-      fi
+      git_display=$(format_git_status "$workspace")
       
-      # Truncate long paths
-      if [[ ${#workspace} -gt 40 ]]; then
-        display_ws="...${workspace: -37}"
-      else
-        display_ws="$workspace"
-      fi
-      
-      printf "%-6s  %-20s  %-16s  ${status}  %s%s\n" "$port" "$repo" "$branch" "$marker" "$display_ws"
-    done
-    has_output=true
+      PORTS+=("$port")
+      REPOS+=("$repo")
+      BRANCHES+=("$branch")
+      STATUSES+=("$status")
+      WORKSPACES+=("$workspace")
+      GIT_STATUSES+=("$git_display")
+      SESSIONS+=("")
+    done < <(jq -r 'to_entries[] | "\(.value.port)\t\(.value.repo)\t\(.value.branch)\t\(.key)"' "$PORTS_FILE" 2>/dev/null)
   fi
   
-  # Orphaned clones (skip if --active)
-  if [[ "$ACTIVE_ONLY" != "true" ]] && [[ -d "$CLONES_DIR" ]]; then
-    tracked_ws=$(get_tracked_workspaces)
-    orphans=""
-    
+  # Add sessions (that aren't already tracked as containers)
+  if [[ "$ACTIVE_ONLY" != "true" ]]; then
+    local session_name poll_config workspace branch repo status git_display
+    while IFS= read -r session_name; do
+      [[ -z "$session_name" ]] && continue
+      
+      poll_config=$(tmux show-environment -t "$session_name" 2>/dev/null | grep '^OCDC_POLL_CONFIG=' | cut -d= -f2- || true)
+      [[ -z "$poll_config" ]] && continue
+      
+      workspace=$(tmux show-environment -t "$session_name" 2>/dev/null | grep '^OCDC_WORKSPACE=' | cut -d= -f2- || true)
+      branch=$(tmux show-environment -t "$session_name" 2>/dev/null | grep '^OCDC_BRANCH=' | cut -d= -f2- || true)
+      
+      # Skip if this workspace is already tracked as a container
+      if echo "$tracked_ws" | grep -qFx "$workspace" 2>/dev/null; then
+        continue
+      fi
+      
+      repo=""
+      if [[ -n "$workspace" ]]; then
+        repo=$(basename "$(dirname "$workspace")")
+      fi
+      
+      status="SESSION"
+      git_display="-"
+      
+      if [[ ! -d "$workspace" ]]; then
+        status="ORPHAN"
+      else
+        git_display=$(format_git_status "$workspace")
+      fi
+      
+      PORTS+=("-")
+      REPOS+=("$repo")
+      BRANCHES+=("$branch")
+      STATUSES+=("$status")
+      WORKSPACES+=("$workspace")
+      GIT_STATUSES+=("$git_display")
+      SESSIONS+=("$session_name")
+    done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null)
+  fi
+  
+  # Add orphaned clones (that aren't tracked and don't have sessions)
+  if [[ -d "$CLONES_DIR" ]] && [[ "$ACTIVE_ONLY" != "true" ]]; then
+    local repo_dir repo_name clone_dir branch_name git_display
     for repo_dir in "$CLONES_DIR"/*/; do
       [[ -d "$repo_dir" ]] || continue
       repo_name=$(basename "$repo_dir")
@@ -167,36 +319,99 @@ else
         [[ -d "$clone_dir" ]] || continue
         clone_dir="${clone_dir%/}"
         
-        if ! echo "$tracked_ws" | grep -qFx "$clone_dir"; then
-          branch_name=$(basename "$clone_dir")
-          orphans="${orphans}${repo_name}\t${branch_name}\t${clone_dir}\n"
+        # Skip if tracked as container
+        if echo "$tracked_ws" | grep -qFx "$clone_dir" 2>/dev/null; then
+          continue
         fi
+        
+        # Skip if has a session
+        if echo "$session_ws" | grep -qFx "$clone_dir" 2>/dev/null; then
+          continue
+        fi
+        
+        branch_name=$(basename "$clone_dir")
+        git_display=$(format_git_status "$clone_dir")
+        
+        PORTS+=("-")
+        REPOS+=("$repo_name")
+        BRANCHES+=("$branch_name")
+        STATUSES+=("ORPHAN")
+        WORKSPACES+=("$clone_dir")
+        GIT_STATUSES+=("$git_display")
+        SESSIONS+=("")
       done
     done
+  fi
+  
+  # Display unified table
+  if [[ ${#PORTS[@]} -gt 0 ]]; then
+    echo ""
+    printf "%-6s  %-20s  %-16s  %-8s  %-10s  %s\n" "PORT" "REPO" "BRANCH" "STATUS" "GIT" "SESSION/PATH"
+    printf "%-6s  %-20s  %-16s  %-8s  %-10s  %s\n" "──────" "────────────────────" "────────────────" "────────" "──────────" "────────────"
     
-    if [[ -n "$orphans" ]]; then
-      echo ""
-      echo "Orphaned clones (no tracked container):"
-      printf "%-6s  %-20s  %-16s  %-8s  %s\n" "PORT" "REPO" "BRANCH" "STATUS" "WORKSPACE"
-      printf "%-6s  %-20s  %-16s  %-8s  %s\n" "──────" "────────────────────" "────────────────" "────────" "─────────"
+    local i port repo branch status workspace git_status session
+    for i in "${!PORTS[@]}"; do
+      port="${PORTS[$i]}"
+      repo="${REPOS[$i]}"
+      branch="${BRANCHES[$i]}"
+      status="${STATUSES[$i]}"
+      workspace="${WORKSPACES[$i]}"
+      git_status="${GIT_STATUSES[$i]}"
+      session="${SESSIONS[$i]}"
       
-      echo -e "$orphans" | while IFS=$'\t' read -r repo branch workspace; do
-        [[ -n "$repo" ]] || continue
-        
-        if [[ ${#workspace} -gt 40 ]]; then
-          display_ws="...${workspace: -37}"
+      # Truncate long values
+      [[ ${#repo} -gt 20 ]] && repo="${repo:0:17}..."
+      [[ ${#branch} -gt 16 ]] && branch="${branch:0:13}..."
+      
+      # Color for status
+      local status_display=""
+      case "$status" in
+        UP)      status_display="\033[32mUP\033[0m      " ;;
+        DOWN)    status_display="\033[31mDOWN\033[0m    " ;;
+        SESSION) status_display="\033[34mSESSION\033[0m " ;;
+        ORPHAN)  status_display="\033[33mORPHAN\033[0m  " ;;
+      esac
+      
+      # Color for git status
+      local git_display=""
+      case "$git_status" in
+        dirty)    git_display="\033[31mdirty\033[0m     " ;;
+        clean\ *) git_display="\033[33m${git_status}\033[0m" ;;
+        clean)    git_display="\033[32mclean\033[0m     " ;;
+        -)        git_display="-         " ;;
+      esac
+      
+      # Pad git display to 10 chars
+      local git_len=${#git_status}
+      local padding=$((10 - git_len))
+      [[ $padding -gt 0 ]] && git_display="${git_display}$(printf '%*s' $padding '')"
+      
+      # Show session name or truncated path
+      local extra=""
+      if [[ -n "$session" ]]; then
+        extra="$session"
+      else
+        if [[ ${#workspace} -gt 30 ]]; then
+          extra="...${workspace: -27}"
         else
-          display_ws="$workspace"
+          extra="$workspace"
         fi
-        
-        printf "%-6s  %-20s  %-16s  \033[33mORPHAN\033[0m  %s\n" "-" "$repo" "$branch" "$display_ws"
-      done
-      has_output=true
-    fi
+      fi
+      
+      # Highlight current workspace
+      local marker=""
+      if [[ "$workspace" == "$CURRENT_WS" ]]; then
+        marker="* "
+      fi
+      
+      printf "%-6s  %-20s  %-16s  ${status_display}${git_display}  %s%s\n" \
+        "$port" "$repo" "$branch" "$marker" "$extra"
+    done
+    has_output=true
   fi
   
   if [[ "$has_output" != "true" ]]; then
-    echo "No devcontainer instances or clones found."
+    echo "No devcontainer instances, clones, or sessions found."
     exit 0
   fi
   
@@ -207,6 +422,13 @@ else
   echo "  ocdc go <branch>       Navigate to clone"
   echo "  ocdc exec <cmd>        Execute command in container"
   echo "  ocdc down              Stop current container"
-  echo "  ocdc clean             Clean up orphaned clones"
+  echo "  ocdc clean             Clean up orphans (clones + sessions)"
   echo "  ocdc tui               Interactive TUI"
+}
+
+# Main
+if [[ "$JSON_OUTPUT" == "true" ]]; then
+  output_json
+else
+  output_table
 fi

@@ -59,12 +59,12 @@ test_layout_minimum_widths_on_narrow_terminal() {
   # On a narrow 60-column terminal, should use minimum widths
   calculate_layout 60
   
-  if [[ $REPO_WIDTH -lt 15 ]]; then
-    echo "Repo width should be at least 15, got: $REPO_WIDTH"
+  if [[ $REPO_WIDTH -lt $MIN_REPO_WIDTH ]]; then
+    echo "Repo width should be at least $MIN_REPO_WIDTH, got: $REPO_WIDTH"
     return 1
   fi
-  if [[ $BRANCH_WIDTH -lt 15 ]]; then
-    echo "Branch width should be at least 15, got: $BRANCH_WIDTH"
+  if [[ $BRANCH_WIDTH -lt $MIN_BRANCH_WIDTH ]]; then
+    echo "Branch width should be at least $MIN_BRANCH_WIDTH, got: $BRANCH_WIDTH"
     return 1
   fi
   return 0
@@ -180,12 +180,13 @@ test_no_vertical_padding_on_short_terminal() {
 
 # Helper to source just the layout function and constants from ocdc-tui
 source_layout_function() {
-  # Define constants
-  MIN_REPO_WIDTH=15
-  MIN_BRANCH_WIDTH=15
-  MAX_CONTENT_WIDTH=120
+  # Define constants (must match ocdc-tui)
+  MIN_REPO_WIDTH=12
+  MIN_BRANCH_WIDTH=12
+  MAX_CONTENT_WIDTH=130
   PORT_WIDTH=6
   STATUS_WIDTH=8
+  GIT_WIDTH=10
   REPO_WIDTH=$MIN_REPO_WIDTH
   BRANCH_WIDTH=$MIN_BRANCH_WIDTH
   LEFT_PADDING=2

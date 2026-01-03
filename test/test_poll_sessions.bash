@@ -116,13 +116,19 @@ test_poll_sessions_help() {
   assert_contains "$output" "sessions"
 }
 
-test_poll_sessions_no_sessions() {
-  # Ensure no test sessions exist
+test_poll_sessions_header_always_shown() {
+  # The header row should always be shown (even if sessions exist)
+  # This test is more reliable than checking for "No active poll sessions"
+  # since real sessions may exist on the system
   cleanup_mock_sessions
   
   local output
   output=$("$BIN_DIR/ocdc" poll sessions 2>&1)
-  assert_contains "$output" "No active poll sessions"
+  # Should always show the header row
+  assert_contains "$output" "SESSION"
+  assert_contains "$output" "POLL"
+  assert_contains "$output" "ITEM"
+  assert_contains "$output" "AGE"
 }
 
 test_poll_sessions_lists_session() {
@@ -162,16 +168,7 @@ test_poll_sessions_ignores_non_poll_sessions() {
   return 0
 }
 
-test_poll_sessions_shows_header() {
-  local output
-  output=$("$BIN_DIR/ocdc" poll sessions 2>&1)
-  
-  # Should show column headers
-  assert_contains "$output" "SESSION"
-  assert_contains "$output" "POLL"
-  assert_contains "$output" "ITEM"
-  assert_contains "$output" "AGE"
-}
+# test_poll_sessions_shows_header is combined with test_poll_sessions_header_always_shown
 
 # =============================================================================
 # Tests: ocdc poll attach
@@ -421,8 +418,7 @@ echo "Poll Sessions Command Tests:"
 
 for test_func in \
   test_poll_sessions_help \
-  test_poll_sessions_no_sessions \
-  test_poll_sessions_shows_header \
+  test_poll_sessions_header_always_shown \
   test_poll_sessions_lists_session \
   test_poll_sessions_ignores_non_poll_sessions
 do
