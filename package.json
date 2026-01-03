@@ -2,6 +2,7 @@
   "name": "ocdc",
   "version": "2.5.0",
   "description": "Concurrent branch development with devcontainers using clone-based isolation",
+  "type": "module",
   "main": "bin/ocdc",
   "bin": {
     "ocdc": "./bin/ocdc"
@@ -20,12 +21,15 @@
   "author": "Andrew Thal <467872+athal7@users.noreply.github.com>",
   "license": "MIT",
   "engines": {
-    "node": ">=14"
+    "node": ">=18"
   },
   "scripts": {
     "test": "./test/run_tests.bash",
     "semantic-release": "semantic-release",
     "postinstall": "echo 'OCDC installed successfully! Run \"ocdc --help\" to get started.'"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
   },
   "devDependencies": {
     "@semantic-release/github": "^9.2.6",

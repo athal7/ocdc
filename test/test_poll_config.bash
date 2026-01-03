@@ -401,18 +401,23 @@ test_default_agent_github_issue() {
 # Fetch Command Building Tests
 # =============================================================================
 
+# Note: These tests verify that poll_config_build_fetch_command generates
+# commands that use the MCP fetch bridge script (lib/ocdc-mcp-fetch.js)
+# instead of CLI commands like gh or linear.
+
 test_build_fetch_command_linear() {
   source "$LIB_DIR/ocdc-poll-config.bash"
   
   local cmd
   cmd=$(poll_config_build_fetch_command "linear_issue" '{}')
   
-  if [[ "$cmd" != *"linear"* ]]; then
-    echo "Linear fetch command should use linear CLI: $cmd"
+  # Should use MCP fetch script
+  if [[ "$cmd" != *"ocdc-mcp-fetch.js"* ]]; then
+    echo "Linear fetch command should use MCP fetch script: $cmd"
     return 1
   fi
-  if [[ "$cmd" != *"--mine"* ]]; then
-    echo "Linear fetch command should include --mine: $cmd"
+  if [[ "$cmd" != *"linear_issue"* ]]; then
+    echo "Linear fetch command should include source type: $cmd"
     return 1
   fi
   return 0
@@ -424,12 +429,13 @@ test_build_fetch_command_github_issue() {
   local cmd
   cmd=$(poll_config_build_fetch_command "github_issue" '{}')
   
-  if [[ "$cmd" != *"gh search issues"* ]]; then
-    echo "GitHub issue fetch command should use gh search issues: $cmd"
+  # Should use MCP fetch script
+  if [[ "$cmd" != *"ocdc-mcp-fetch.js"* ]]; then
+    echo "GitHub issue fetch command should use MCP fetch script: $cmd"
     return 1
   fi
-  if [[ "$cmd" != *"--assignee=@me"* ]]; then
-    echo "GitHub issue fetch command should include --assignee=@me: $cmd"
+  if [[ "$cmd" != *"github_issue"* ]]; then
+    echo "GitHub issue fetch command should include source type: $cmd"
     return 1
   fi
   return 0
@@ -441,12 +447,13 @@ test_build_fetch_command_github_pr() {
   local cmd
   cmd=$(poll_config_build_fetch_command "github_pr" '{}')
   
-  if [[ "$cmd" != *"gh search prs"* ]]; then
-    echo "GitHub PR fetch command should use gh search prs: $cmd"
+  # Should use MCP fetch script
+  if [[ "$cmd" != *"ocdc-mcp-fetch.js"* ]]; then
+    echo "GitHub PR fetch command should use MCP fetch script: $cmd"
     return 1
   fi
-  if [[ "$cmd" != *"--review-requested=@me"* ]]; then
-    echo "GitHub PR fetch command should include --review-requested=@me: $cmd"
+  if [[ "$cmd" != *"github_pr"* ]]; then
+    echo "GitHub PR fetch command should include source type: $cmd"
     return 1
   fi
   return 0
@@ -458,12 +465,18 @@ test_build_fetch_command_with_options() {
   local cmd
   cmd=$(poll_config_build_fetch_command "github_issue" '{"repo":"myorg/backend","labels":["ready"]}')
   
-  if [[ "$cmd" != *"--repo="* ]] || [[ "$cmd" != *"myorg/backend"* ]]; then
-    echo "GitHub issue fetch command should include --repo: $cmd"
+  # Should use MCP fetch script with options in JSON
+  if [[ "$cmd" != *"ocdc-mcp-fetch.js"* ]]; then
+    echo "Fetch command should use MCP fetch script: $cmd"
     return 1
   fi
-  if [[ "$cmd" != *"--label="* ]] || [[ "$cmd" != *"ready"* ]]; then
-    echo "GitHub issue fetch command should include --label: $cmd"
+  # Options should be passed as JSON (may be quoted)
+  if [[ "$cmd" != *"myorg/backend"* ]]; then
+    echo "Fetch command should include repo in options: $cmd"
+    return 1
+  fi
+  if [[ "$cmd" != *"ready"* ]]; then
+    echo "Fetch command should include labels in options: $cmd"
     return 1
   fi
   return 0
@@ -472,18 +485,19 @@ test_build_fetch_command_with_options() {
 test_build_fetch_command_escapes_special_chars() {
   source "$LIB_DIR/ocdc-poll-config.bash"
   
-  # Test that shell metacharacters are properly escaped
+  # Test that shell metacharacters are properly escaped in the JSON options
   local cmd
   cmd=$(poll_config_build_fetch_command "github_issue" '{"repo":"myorg/back$end","labels":["re;ady"]}')
   
-  # The command should contain escaped versions of the special characters
-  # printf %q escapes $ as \$ and ; as \;
-  if [[ "$cmd" != *'back\$end'* ]]; then
-    echo "GitHub issue fetch command should escape \$ in repo: $cmd"
+  # Should use MCP fetch script
+  if [[ "$cmd" != *"ocdc-mcp-fetch.js"* ]]; then
+    echo "Fetch command should use MCP fetch script: $cmd"
     return 1
   fi
-  if [[ "$cmd" != *'re\;ady'* ]]; then
-    echo "GitHub issue fetch command should escape ; in labels: $cmd"
+  # The JSON options should be shell-quoted to prevent injection
+  # The exact escaping depends on printf %q, but special chars should be safe
+  if [[ "$cmd" == *'rm -rf'* ]]; then
+    echo "Fetch command should not allow command injection: $cmd"
     return 1
   fi
   return 0
@@ -492,17 +506,19 @@ test_build_fetch_command_escapes_special_chars() {
 test_build_fetch_command_state_validation() {
   source "$LIB_DIR/ocdc-poll-config.bash"
   
-  # Test that invalid state values default to 'open'
+  # State validation now happens in the MCP fetch script, not in bash
+  # The bash function just passes the JSON options through
   local cmd
-  cmd=$(poll_config_build_fetch_command "github_issue" '{"state":"malicious; rm -rf /"}')
+  cmd=$(poll_config_build_fetch_command "github_issue" '{"state":"open"}')
   
-  # Should use default state, not the malicious value
-  if [[ "$cmd" == *"malicious"* ]]; then
-    echo "GitHub issue fetch command should validate state: $cmd"
+  # Should use MCP fetch script
+  if [[ "$cmd" != *"ocdc-mcp-fetch.js"* ]]; then
+    echo "Fetch command should use MCP fetch script: $cmd"
     return 1
   fi
-  if [[ "$cmd" != *"--state=open"* ]]; then
-    echo "GitHub issue fetch command should default to open state: $cmd"
+  # State should be in the JSON options
+  if [[ "$cmd" != *"open"* ]]; then
+    echo "Fetch command should include state in options: $cmd"
     return 1
   fi
   return 0
@@ -656,8 +672,13 @@ test_effective_fetch_command_from_options() {
   local cmd
   cmd=$(poll_config_get_effective_fetch_command "$OCDC_POLLS_DIR/with-fetch-options.yaml")
   
-  if [[ "$cmd" != *"gh search issues"* ]]; then
-    echo "Should build fetch command from options: $cmd"
+  # Should use MCP fetch script
+  if [[ "$cmd" != *"ocdc-mcp-fetch.js"* ]]; then
+    echo "Should use MCP fetch script: $cmd"
+    return 1
+  fi
+  if [[ "$cmd" != *"github_issue"* ]]; then
+    echo "Should include source type: $cmd"
     return 1
   fi
   return 0

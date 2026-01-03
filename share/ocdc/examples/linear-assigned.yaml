@@ -6,8 +6,22 @@
 # sessions with OpenCode to work on them.
 #
 # Prerequisites:
-# - linear CLI: brew install schpet/tap/linear
-# - LINEAR_API_KEY environment variable set
+# - MCP server 'linear' configured in ~/.config/opencode/opencode.json
+# - LINEAR_API_TOKEN environment variable set
+#
+# Example MCP configuration:
+#   {
+#     "mcp": {
+#       "linear": {
+#         "type": "remote",
+#         "url": "https://mcp.linear.app/sse",
+#         "enabled": true,
+#         "headers": {
+#           "Authorization": "Bearer ${LINEAR_API_TOKEN}"
+#         }
+#       }
+#     }
+#   }
 #
 # All other settings (fetch options, item mapping, prompt, session) use
 # smart defaults based on source_type. Override only if needed.

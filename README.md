@@ -78,6 +78,39 @@ ocdc clean              # Remove orphaned clones
 
 ocdc can automatically poll external sources (GitHub PRs, Linear issues) and create devcontainer sessions with OpenCode to work on them.
 
+### Prerequisites
+
+Polling uses MCP (Model Context Protocol) servers configured in your OpenCode config. Add the appropriate MCP servers to `~/.config/opencode/opencode.json`:
+
+**For GitHub issues/PRs:**
+```json
+{
+  "mcp": {
+    "github": {
+      "type": "remote",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "enabled": true
+    }
+  }
+}
+```
+
+**For Linear issues:**
+```json
+{
+  "mcp": {
+    "linear": {
+      "type": "remote",
+      "url": "https://mcp.linear.app/sse",
+      "enabled": true,
+      "headers": {
+        "Authorization": "Bearer ${LINEAR_API_TOKEN}"
+      }
+    }
+  }
+}
+```
+
 ### Quick Start
 
 ```bash
@@ -85,7 +118,7 @@ ocdc can automatically poll external sources (GitHub PRs, Linear issues) and cre
 mkdir -p ~/.config/ocdc/polls
 cp "$(brew --prefix)/share/ocdc/examples/github-issues.yaml" ~/.config/ocdc/polls/
 
-# Edit with your repo and label
+# Edit with your repo mappings
 vim ~/.config/ocdc/polls/github-issues.yaml
 
 # Start automatic polling (runs every 5 minutes)
@@ -100,13 +133,13 @@ tail -f "$(brew --prefix)/var/log/ocdc-poll.log"
 ### Configuration
 
 Poll configs live in `~/.config/ocdc/polls/`. Each config defines:
-- `fetch_command` - Shell command that outputs JSON array of items
-- `item_mapping` - jq expressions to extract fields (key, repo, branch, title, body, url, etc.)
-- `repo_paths` - Map repo names to local paths
-- `prompt.template` - Template for OpenCode session prompt
-- `session.name_template` - Template for tmux session name
+- `source_type` - One of: `github_issue`, `github_pr`, `linear_issue`
+- `repo_filters` - Rules for mapping items to local repositories
+- `fetch` - Optional fetch options (assignee, state, labels, etc.)
+- `prompt.template` - Template for OpenCode session prompt (optional)
+- `session.name_template` - Template for tmux session name (optional)
 
-**Available template variables**: `{{key}}`, `{{repo}}`, `{{repo_short}}`, `{{number}}`, `{{title}}`, `{{body}}`, `{{url}}`, `{{branch}}`
+**Available template variables**: `{key}`, `{repo}`, `{repo_short}`, `{number}`, `{title}`, `{body}`, `{url}`, `{branch}`
 
 Example configs are installed to `$(brew --prefix)/share/ocdc/examples/` and documented in the [examples directory](share/ocdc/examples/).
 
