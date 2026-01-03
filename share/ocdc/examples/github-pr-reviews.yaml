@@ -8,12 +8,25 @@
 # Prerequisites:
 # - MCP server 'github' configured in ~/.config/opencode/opencode.json
 #
-# Example MCP configuration:
+# Example MCP configurations:
+#
+# Option A - Remote (GitHub Copilot MCP):
 #   {
 #     "mcp": {
 #       "github": {
 #         "type": "remote",
 #         "url": "https://api.githubcopilot.com/mcp/",
+#         "enabled": true
+#       }
+#     }
+#   }
+#
+# Option B - Local (using gh CLI token):
+#   {
+#     "mcp": {
+#       "github": {
+#         "type": "local",
+#         "command": ["sh", "-c", "GITHUB_PERSONAL_ACCESS_TOKEN=$(gh auth token) npx -y @modelcontextprotocol/server-github"],
 #         "enabled": true
 #       }
 #     }
