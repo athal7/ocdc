@@ -20,6 +20,9 @@ Thumbs.db
 test/tmp/
 *.log
 
+# OpenCode session data (created if tests run without isolation)
+.opencode/
+
 # Local environment
 .env
 .env.local
