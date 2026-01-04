@@ -198,38 +198,34 @@ self_iteration_select_candidates() {
 # Label Management (GitHub)
 # =============================================================================
 
-# Add the ready label to an issue
-# Usage: self_iteration_add_ready_label "owner/repo" issue_number
+# Add a label to a GitHub issue
+# Usage: self_iteration_add_ready_label "owner/repo" issue_number [label]
 self_iteration_add_ready_label() {
   local repo="$1"
   local issue_number="$2"
-  
-  local ready_label
-  ready_label=$(self_iteration_get_ready_label)
+  local label="${3:-$(self_iteration_get_ready_label)}"
   
   if self_iteration_is_dry_run; then
-    echo "[DRY-RUN] Would add label '$ready_label' to $repo#$issue_number" >&2
+    echo "[DRY-RUN] Would add label '$label' to $repo#$issue_number" >&2
     return 0
   fi
   
-  gh issue edit --repo "$repo" "$issue_number" --add-label "$ready_label" 2>/dev/null
+  gh issue edit --repo "$repo" "$issue_number" --add-label "$label" 2>/dev/null
 }
 
-# Remove the ready label from an issue
-# Usage: self_iteration_remove_ready_label "owner/repo" issue_number
+# Remove a label from a GitHub issue
+# Usage: self_iteration_remove_ready_label "owner/repo" issue_number [label]
 self_iteration_remove_ready_label() {
   local repo="$1"
   local issue_number="$2"
-  
-  local ready_label
-  ready_label=$(self_iteration_get_ready_label)
+  local label="${3:-$(self_iteration_get_ready_label)}"
   
   if self_iteration_is_dry_run; then
-    echo "[DRY-RUN] Would remove label '$ready_label' from $repo#$issue_number" >&2
+    echo "[DRY-RUN] Would remove label '$label' from $repo#$issue_number" >&2
     return 0
   fi
   
-  gh issue edit --repo "$repo" "$issue_number" --remove-label "$ready_label" 2>/dev/null
+  gh issue edit --repo "$repo" "$issue_number" --remove-label "$label" 2>/dev/null
 }
 
 # =============================================================================
@@ -237,9 +233,9 @@ self_iteration_remove_ready_label() {
 # =============================================================================
 
 # Run self-iteration for a repo
-# Fetches issues, evaluates, and marks ready up to available slots
-# Usage: self_iteration_run "owner/repo" [issues_json]
-# If issues_json not provided, fetches from GitHub
+# Fetches issues via MCP, evaluates readiness, and executes ready_action
+# Usage: self_iteration_run "repo_key" [issues_json]
+# If issues_json not provided, fetches via MCP using issue_tracker config
 self_iteration_run() {
   local repo_key="$1"
   local issues_json="${2:-}"
@@ -258,23 +254,21 @@ self_iteration_run() {
     return 0
   fi
   
-  # Get issue tracker info
-  local tracker_type tracker_repo
-  tracker_type=$(echo "$repo_config" | jq -r '.issue_tracker.type // "github"')
-  tracker_repo=$(echo "$repo_config" | jq -r '.issue_tracker.repo // empty')
+  # Get issue tracker config
+  local source_type fetch_options ready_action_type ready_action_label
+  source_type=$(echo "$repo_config" | jq -r '.issue_tracker.source_type // "github_issue"')
+  fetch_options=$(echo "$repo_config" | jq -c '.issue_tracker.fetch_options // {}')
+  ready_action_type=$(echo "$repo_config" | jq -r '.issue_tracker.ready_action.type // "add_label"')
+  ready_action_label=$(echo "$repo_config" | jq -r '.issue_tracker.ready_action.label // empty')
   
-  if [[ "$tracker_type" != "github" ]]; then
-    echo "[self-iteration] Only GitHub supported currently, got: $tracker_type" >&2
-    return 0
-  fi
-  
-  if [[ -z "$tracker_repo" ]]; then
-    tracker_repo="$repo_key"
+  # Use global ready_label as default if not specified in repo config
+  if [[ -z "$ready_action_label" ]] && [[ "$ready_action_type" == "add_label" ]]; then
+    ready_action_label=$(self_iteration_get_ready_label)
   fi
   
   # Fetch issues if not provided
   if [[ -z "$issues_json" ]]; then
-    issues_json=$(self_iteration_fetch_github_issues "$tracker_repo")
+    issues_json=$(self_iteration_fetch_issues "$source_type" "$fetch_options")
   fi
   
   # Calculate available slots
@@ -298,16 +292,29 @@ self_iteration_run() {
     return 0
   fi
   
-  echo "[self-iteration] Marking $count issue(s) as ready for $repo_key" >&2
+  echo "[self-iteration] Found $count eligible issue(s) for $repo_key" >&2
   
-  # Add ready label to each candidate
+  # Execute ready action for each candidate
   echo "$candidates" | jq -c '.[]' | while read -r issue; do
-    local number title
-    number=$(echo "$issue" | jq -r '.number')
+    local identifier title
+    identifier=$(echo "$issue" | jq -r '.identifier // .number // .id')
     title=$(echo "$issue" | jq -r '.title')
     
-    echo "[self-iteration]   #$number: $title" >&2
-    self_iteration_add_ready_label "$tracker_repo" "$number"
+    case "$ready_action_type" in
+      add_label)
+        local repo
+        repo=$(echo "$fetch_options" | jq -r '.repo // empty')
+        [[ -z "$repo" ]] && repo="$repo_key"
+        echo "[self-iteration]   #$identifier: $title" >&2
+        self_iteration_add_ready_label "$repo" "$identifier" "$ready_action_label"
+        ;;
+      none)
+        echo "[self-iteration]   $identifier: $title (no action)" >&2
+        ;;
+      *)
+        echo "[self-iteration]   $identifier: $title (unknown action: $ready_action_type)" >&2
+        ;;
+    esac
   done
   
   echo "$candidates"
@@ -317,81 +324,65 @@ self_iteration_run() {
 # Issue Fetching (MCP-based)
 # =============================================================================
 
-# Fetch open issues for a repo using MCP
-# Usage: issues=$(self_iteration_fetch_issues "owner/repo")
-# Falls back to gh CLI if MCP fails
+# Fetch issues using MCP with the specified source type and options
+# Usage: issues=$(self_iteration_fetch_issues "source_type" "$fetch_options_json")
+# Returns: JSON array of issues normalized to common format
 self_iteration_fetch_issues() {
-  local repo="$1"
+  local source_type="$1"
+  local fetch_options="$2"
   
-  local issues=""
-  local mcp_exit_code=0
+  # Default to github_issue if not specified
+  [[ -z "$source_type" ]] && source_type="github_issue"
+  [[ -z "$fetch_options" ]] && fetch_options='{}'
   
-  # Try MCP fetch first
-  local fetch_options
-  fetch_options=$(jq -n --arg repo "$repo" '{repo: $repo, state: "open"}')
-  
-  issues=$(node "${SCRIPT_DIR}/ocdc-mcp-fetch.js" "github_issue" "$fetch_options" 2>/dev/null) || mcp_exit_code=$?
-  
-  # MCP exit codes: 10=not configured, 11=connection failed, 12=tool not found, 13=tool failed
-  if [[ $mcp_exit_code -ne 0 ]]; then
-    # Fall back to gh CLI
-    issues=$(_self_iteration_fetch_cli "$repo" 2>/dev/null) || issues="[]"
-  fi
-  
-  # Normalize the response to consistent field names
-  self_iteration_normalize_issues "$issues"
+  # Fetch via MCP, sanitize control chars, and normalize in one pipeline
+  # Control chars (U+0000-U+001F except \n \r \t) in issue bodies break JSON parsing
+  node "${SCRIPT_DIR}/ocdc-mcp-fetch.js" "$source_type" "$fetch_options" 2>/dev/null | \
+    perl -pe 's/[\x00-\x08\x0b\x0c\x0e-\x1f]//g' | \
+    _self_iteration_normalize_json || echo "[]"
 }
 
-# Fallback: Fetch issues using gh CLI (internal)
-_self_iteration_fetch_cli() {
-  local repo="$1"
-  
-  gh api -X GET "/repos/${repo}/issues" \
-    -f state=open \
-    -f per_page=100 \
-    --jq '[.[] | select(.pull_request == null)]' 2>/dev/null || echo "[]"
-}
-
-# Normalize issue JSON to consistent field names
-# Handles both GitHub API (snake_case) and gh CLI (camelCase) formats
-# Usage: normalized=$(self_iteration_normalize_issues "$issues_json")
-self_iteration_normalize_issues() {
-  local issues_json="$1"
-  
-  # Handle empty input
-  if [[ -z "$issues_json" ]] || [[ "$issues_json" == "null" ]]; then
-    echo "[]"
-    return 0
-  fi
-  
-  # Normalize field names and handle different structures
-  echo "$issues_json" | jq '
+# Internal: normalize JSON from stdin to common issue format
+# Handles GitHub (number, body, html_url) and Linear (identifier, description, url)
+# Note: Control chars should already be sanitized by perl before this function
+_self_iteration_normalize_json() {
+  jq '
     [.[] | {
-      number: .number,
+      # Use number for GitHub, identifier for Linear
+      number: (.number // .identifier // null),
+      # Keep Linear identifier separately for display
+      identifier: (.identifier // null),
+      # Keep Linear id for API calls
+      id: (.id // null),
       title: .title,
-      body: .body,
+      # body for GitHub, description for Linear
+      body: (.body // .description // ""),
       state: .state,
+      # html_url for GitHub, url for Linear
       html_url: (.html_url // .url // ""),
-      # Normalize created_at (GitHub API) vs createdAt (gh CLI)
       created_at: (.created_at // .createdAt // null),
-      # Normalize labels array
-      labels: (.labels // []),
-      # Normalize assignees array
+      # Normalize labels to [{name: "..."}] format
+      labels: (
+        if (.labels | type) == "array" then
+          if (.labels | length) > 0 and (.labels[0] | type) == "object" then .labels
+          else [.labels[] | {name: .}]
+          end
+        else []
+        end
+      ),
       assignees: (.assignees // []),
-      # Normalize milestone
       milestone: .milestone,
-      # Normalize comments - handle both integer and array formats
+      # Linear team info
+      team: .team,
       comments: (
         if (.comments | type) == "array" then (.comments | length)
         elif (.comments | type) == "number" then .comments
         else 0
         end
       ),
-      # Normalize reactions - handle different structures
       reactions: (
         if .reactions then .reactions
         elif .reactionGroups then
-          # gh CLI format: convert reactionGroups to reactions object
           (.reactionGroups // [] | 
             map(select(.content == "THUMBS_UP") | {"+1": (.users.totalCount // 0)}) |
             add // {"+1": 0}
@@ -399,15 +390,28 @@ self_iteration_normalize_issues() {
         else {"+1": 0}
         end
       ),
-      # Preserve repository info
       repository: .repository
     }]
   ' 2>/dev/null || echo "[]"
 }
 
-# Legacy alias for backward compatibility
-self_iteration_fetch_github_issues() {
-  self_iteration_fetch_issues "$@"
+# Normalize issue JSON to consistent field names
+# Handles both GitHub API (snake_case) and gh CLI (camelCase) formats
+# Usage: normalized=$(self_iteration_normalize_issues "$issues_json")
+# Or:    echo "$json" | self_iteration_normalize_issues
+self_iteration_normalize_issues() {
+  local issues_json="${1:-$(cat)}"
+  
+  # Handle empty input
+  if [[ -z "$issues_json" ]] || [[ "$issues_json" == "null" ]]; then
+    echo "[]"
+    return 0
+  fi
+  
+  # Sanitize control chars and normalize via internal function
+  printf '%s' "$issues_json" | \
+    perl -pe 's/[\x00-\x08\x0b\x0c\x0e-\x1f]//g' | \
+    _self_iteration_normalize_json
 }
 
 # Run self-iteration for all configured repos

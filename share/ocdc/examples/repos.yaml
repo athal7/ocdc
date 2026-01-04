@@ -4,8 +4,7 @@
 #
 # This file configures per-repository settings for automatic issue
 # readiness evaluation. When self-iteration is enabled, ocdc will
-# automatically mark issues as ready (add ocdc:ready label) based
-# on priority, dependencies, and WIP limits.
+# evaluate issues and optionally mark them as ready.
 #
 # Location: ~/.config/ocdc/repos.yaml
 #
@@ -17,32 +16,42 @@
 #       "ready_label": "ocdc:ready"
 #     }
 #   }
-# - gh CLI authenticated with appropriate permissions
+# - MCP server configured for your issue tracker (github or linear)
 
 repos:
-  # Example: GitHub repository with full configuration
+  # ==========================================================================
+  # GitHub Example - Full configuration
+  # ==========================================================================
   myorg/backend:
     # Local path to the repository (required)
     repo_path: ~/code/backend
     
-    # Issue tracker configuration
+    # Issue tracker configuration - uses MCP to fetch issues
     issue_tracker:
-      type: github
-      repo: myorg/backend  # Can differ from repo key if needed
+      # MCP source type: github_issue or linear_issue
+      source_type: github_issue
+      
+      # Options passed to MCP fetch (varies by source type)
+      # See share/ocdc/examples/*.yaml for fetch option examples
+      fetch_options:
+        repo: myorg/backend
+        state: open
+        # labels: ["bug", "enhancement"]  # Optional: filter by labels
+      
+      # Action when marking an issue as ready
+      ready_action:
+        type: add_label           # add_label or none
+        label: "ocdc:ready"       # Label to add (defaults to global ready_label)
     
     # Readiness evaluation criteria
     readiness:
       labels:
-        # Issues must NOT have any of these labels
+        # Issues with these labels are excluded
         exclude:
           - blocked
           - needs-design
           - needs-review
           - wontfix
-        # Issues must have ALL of these labels (optional)
-        required: []
-        # Issues must have at least ONE of these labels (optional)
-        any_of: []
       
       # Priority scoring - higher scores get picked first
       priority:
@@ -70,25 +79,60 @@ repos:
     # WIP (Work In Progress) limits for this repo
     wip_limits:
       max_concurrent: 2
-    
-    # Comment settings (optional)
-    comments:
-      on_start: false      # Comment when work starts
-      on_pr_created: false # Comment when PR is created
 
-  # Example: Minimal configuration (uses defaults)
+  # ==========================================================================
+  # GitHub Example - Minimal configuration (uses defaults)
+  # ==========================================================================
   myorg/frontend:
     repo_path: ~/code/frontend
     issue_tracker:
-      type: github
-      repo: myorg/frontend
+      source_type: github_issue
+      fetch_options:
+        repo: myorg/frontend
 
-  # Example: Different repo path than repo key
-  # Useful when local path doesn't match GitHub structure
-  acme/shared-lib:
-    repo_path: ~/work/libraries/shared
+  # ==========================================================================
+  # Linear Example
+  # ==========================================================================
+  # Linear issues are typically picked up by workflow state rather than labels,
+  # so ready_action is set to "none". The poller finds issues in the appropriate
+  # state (e.g., "In Progress", "Started") without needing to add labels.
+  #
+  # Prerequisites:
+  # - MCP server 'linear' configured in ~/.config/opencode/opencode.json:
+  #   {
+  #     "mcp": {
+  #       "linear": {
+  #         "type": "remote",
+  #         "url": "https://mcp.linear.app/sse",
+  #         "enabled": true,
+  #         "headers": {
+  #           "Authorization": "Bearer ${LINEAR_API_TOKEN}"
+  #         }
+  #       }
+  #     }
+  #   }
+  
+  myorg/linear-project:
+    repo_path: ~/code/linear-project
     issue_tracker:
-      type: github
-      repo: acme-org/shared-library
+      source_type: linear_issue
+      fetch_options:
+        team: "ENG"               # Linear team key
+        assignee: "@me"           # Issues assigned to you
+        # state: ["started", "unstarted"]  # Optional: filter by state
+      ready_action:
+        type: none                # Linear uses workflow states, not labels
+    
+    readiness:
+      labels:
+        exclude:
+          - blocked
+      priority:
+        labels:
+          - label: Urgent
+            weight: 100
+          - label: High
+            weight: 50
+    
     wip_limits:
       max_concurrent: 1

@@ -25,17 +25,34 @@
         },
         "issue_tracker": {
           "type": "object",
-          "description": "Issue tracker configuration",
+          "description": "Issue tracker configuration for fetching issues via MCP",
           "properties": {
-            "type": {
+            "source_type": {
               "type": "string",
-              "enum": ["github"],
-              "default": "github",
-              "description": "Type of issue tracker (currently only github supported)"
+              "enum": ["github_issue", "linear_issue"],
+              "default": "github_issue",
+              "description": "MCP source type for fetching issues"
             },
-            "repo": {
-              "type": "string",
-              "description": "Repository identifier (owner/repo for GitHub)"
+            "fetch_options": {
+              "type": "object",
+              "description": "Options passed to MCP fetch (repo, team, assignee, state, labels, etc.)",
+              "additionalProperties": true
+            },
+            "ready_action": {
+              "type": "object",
+              "description": "Action to take when marking an issue as ready",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": ["add_label", "none"],
+                  "default": "add_label",
+                  "description": "Action type: add_label (GitHub) or none (Linear)"
+                },
+                "label": {
+                  "type": "string",
+                  "description": "Label to add (for add_label type)"
+                }
+              }
             }
           }
         },
@@ -102,11 +119,6 @@
                   "default": true,
                   "description": "Check issue body for 'blocked by #X' patterns"
                 },
-                "check_github_dependencies": {
-                  "type": "boolean",
-                  "default": false,
-                  "description": "Use GitHub's issue dependencies API (if available)"
-                },
                 "blocking_labels": {
                   "type": "array",
                   "items": { "type": "string" },
@@ -126,21 +138,6 @@
               "description": "Maximum concurrent sessions for this repository"
             }
           }
-        },
-        "comments": {
-          "type": "object",
-          "properties": {
-            "on_start": {
-              "type": "boolean",
-              "default": false,
-              "description": "Comment on issue when work starts"
-            },
-            "on_pr_created": {
-              "type": "boolean",
-              "default": false,
-              "description": "Comment on issue when PR is created"
-            }
-          }
         }
       }
     }
@@ -151,11 +148,35 @@
         "myorg/backend": {
           "repo_path": "~/code/backend",
           "issue_tracker": {
-            "type": "github",
-            "repo": "myorg/backend"
+            "source_type": "github_issue",
+            "fetch_options": {
+              "repo": "myorg/backend",
+              "state": "open"
+            },
+            "ready_action": {
+              "type": "add_label",
+              "label": "ocdc:ready"
+            }
           },
           "wip_limits": {
             "max_concurrent": 2
+          }
+        }
+      }
+    },
+    {
+      "repos": {
+        "myorg/frontend": {
+          "repo_path": "~/code/frontend",
+          "issue_tracker": {
+            "source_type": "linear_issue",
+            "fetch_options": {
+              "team": "ENG",
+              "assignee": "@me"
+            },
+            "ready_action": {
+              "type": "none"
+            }
           }
         }
       }

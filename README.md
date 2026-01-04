@@ -192,7 +192,7 @@ ocdc poll --once --skip-cleanup
 
 ### Self-Iteration (Automatic Issue Readiness)
 
-Self-iteration automatically evaluates and marks issues as ready for work based on priority, dependencies, and WIP limits. This creates a closed-loop system where ocdc manages its own work queue.
+Self-iteration automatically evaluates issues and marks them as ready for work based on priority, dependencies, and WIP limits. Supports both GitHub and Linear via MCP.
 
 **Enable in `~/.config/ocdc/config.json`:**
 
@@ -212,11 +212,16 @@ Self-iteration automatically evaluates and marks issues as ready for work based 
 
 ```yaml
 repos:
+  # GitHub example
   myorg/backend:
     repo_path: ~/code/backend
     issue_tracker:
-      type: github
-      repo: myorg/backend
+      source_type: github_issue
+      fetch_options:
+        repo: myorg/backend
+      ready_action:
+        type: add_label
+        label: "ocdc:ready"
     readiness:
       labels:
         exclude: ["blocked", "needs-design"]
@@ -228,21 +233,32 @@ repos:
             weight: 50
     wip_limits:
       max_concurrent: 2
+  
+  # Linear example (no label action needed - uses workflow states)
+  myorg/linear-project:
+    repo_path: ~/code/linear-project
+    issue_tracker:
+      source_type: linear_issue
+      fetch_options:
+        team: "ENG"
+        assignee: "@me"
+      ready_action:
+        type: none
 ```
 
 **How it works:**
 
-1. On each poll cycle, ocdc evaluates open issues for configured repos
-2. Issues are scored by priority (see below) with age as a tiebreaker (FIFO)
+1. On each poll cycle, ocdc fetches issues via MCP (GitHub or Linear)
+2. Issues are scored by priority with age as a tiebreaker (FIFO)
 3. Blocked issues are excluded (labels, body references, unchecked task lists)
-4. Top candidates are marked with the ready label (up to WIP limits)
-5. The regular poll cycle then picks up newly-ready issues
+4. Top candidates have their `ready_action` executed (up to WIP limits)
+5. The regular poll cycle then picks up ready issues
 
 **Priority scoring:**
 
 - **Explicit labels**: Configure weights for labels like `critical`, `high`, `medium`
 - **Inferred signals** (when no priority label):
-  - Milestone: +20 points (issues in a milestone are prioritized)
+  - Milestone: +20 points
   - Reactions: +5 per thumbs-up (capped at 30)
   - Comments: +2 per comment (capped at 20)
   - Assignee: +15 if assigned

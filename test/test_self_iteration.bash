@@ -38,14 +38,18 @@ setup() {
 }
 EOF
   
-  # Create repos config
+  # Create repos config with new format
   cat > "$OCDC_REPOS_FILE" << 'EOF'
 repos:
   athal7/ocdc:
     repo_path: ~/code/ocdc
     issue_tracker:
-      type: github
-      repo: athal7/ocdc
+      source_type: github_issue
+      fetch_options:
+        repo: athal7/ocdc
+      ready_action:
+        type: add_label
+        label: "ocdc:ready"
     readiness:
       labels:
         exclude: ["blocked", "needs-design"]
@@ -267,6 +271,91 @@ test_select_candidates_excludes_already_ready() {
 }
 
 # =============================================================================
+# MCP Fetch Integration Tests  
+# =============================================================================
+
+test_fetch_issues_function_exists() {
+  source "$LIB_DIR/ocdc-self-iteration.bash"
+  
+  # Verify the MCP-based fetch function exists
+  if ! type self_iteration_fetch_issues &>/dev/null; then
+    echo "self_iteration_fetch_issues function should exist"
+    return 1
+  fi
+  return 0
+}
+
+test_normalize_issues_handles_empty() {
+  source "$LIB_DIR/ocdc-self-iteration.bash"
+  
+  local result
+  result=$(self_iteration_normalize_issues "")
+  
+  assert_equals "[]" "$result"
+}
+
+test_normalize_issues_handles_null() {
+  source "$LIB_DIR/ocdc-self-iteration.bash"
+  
+  local result
+  result=$(self_iteration_normalize_issues "null")
+  
+  assert_equals "[]" "$result"
+}
+
+test_normalize_issues_converts_camelcase_to_snake_case() {
+  source "$LIB_DIR/ocdc-self-iteration.bash"
+  
+  # Input with camelCase (gh CLI format)
+  local input='[{"number":1,"title":"Test","createdAt":"2026-01-01T00:00:00Z"}]'
+  
+  local result
+  result=$(self_iteration_normalize_issues "$input")
+  
+  # Should have created_at (snake_case)
+  local created_at
+  created_at=$(echo "$result" | jq -r '.[0].created_at')
+  
+  if [[ "$created_at" != "2026-01-01T00:00:00Z" ]]; then
+    echo "Expected created_at to be normalized, got: $created_at"
+    return 1
+  fi
+  return 0
+}
+
+test_normalize_issues_handles_comments_array() {
+  source "$LIB_DIR/ocdc-self-iteration.bash"
+  
+  # Input with comments as array (gh CLI format)
+  local input='[{"number":1,"title":"Test","comments":[{"id":1},{"id":2}]}]'
+  
+  local result
+  result=$(self_iteration_normalize_issues "$input")
+  
+  # Should convert array to count
+  local comments
+  comments=$(echo "$result" | jq -r '.[0].comments')
+  
+  assert_equals "2" "$comments"
+}
+
+test_normalize_issues_handles_comments_integer() {
+  source "$LIB_DIR/ocdc-self-iteration.bash"
+  
+  # Input with comments as integer (REST API format)
+  local input='[{"number":1,"title":"Test","comments":5}]'
+  
+  local result
+  result=$(self_iteration_normalize_issues "$input")
+  
+  # Should preserve integer
+  local comments
+  comments=$(echo "$result" | jq -r '.[0].comments')
+  
+  assert_equals "5" "$comments"
+}
+
+# =============================================================================
 # Run Tests
 # =============================================================================
 
@@ -285,7 +374,13 @@ for test_func in \
   test_select_candidates_respects_slots \
   test_select_candidates_prioritizes_by_score \
   test_select_candidates_excludes_blocked \
-  test_select_candidates_excludes_already_ready
+  test_select_candidates_excludes_already_ready \
+  test_fetch_issues_function_exists \
+  test_normalize_issues_handles_empty \
+  test_normalize_issues_handles_null \
+  test_normalize_issues_converts_camelcase_to_snake_case \
+  test_normalize_issues_handles_comments_array \
+  test_normalize_issues_handles_comments_integer
 do
   setup
   run_test "${test_func#test_}" "$test_func"

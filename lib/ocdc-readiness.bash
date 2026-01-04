@@ -43,11 +43,11 @@ readiness_check_labels() {
   
   # Get exclude labels from config
   local exclude_labels
-  exclude_labels=$(echo "$config" | jq -r '.readiness.labels.exclude // []')
+  exclude_labels=$(printf '%s' "$config" | jq -r '.readiness.labels.exclude // []')
   
   # Get blocking labels from dependencies config
   local blocking_labels
-  blocking_labels=$(echo "$config" | jq -r '.readiness.dependencies.blocking_labels // []')
+  blocking_labels=$(printf '%s' "$config" | jq -r '.readiness.dependencies.blocking_labels // []')
   
   # Merge both lists
   local all_blocked
@@ -55,7 +55,7 @@ readiness_check_labels() {
   
   # Get issue labels (lowercase for comparison)
   local issue_labels
-  issue_labels=$(echo "$issue_json" | jq -r '[.labels[]?.name // empty] | map(ascii_downcase)')
+  issue_labels=$(printf '%s' "$issue_json" | jq -r '[.labels[]?.name // empty] | map(ascii_downcase)')
   
   # Check if any issue label is in blocked list
   local has_blocked
@@ -108,7 +108,7 @@ readiness_check_dependencies() {
   
   # Check if body reference checking is enabled
   local check_body
-  check_body=$(echo "$config" | jq -r '.readiness.dependencies.check_body_references // true')
+  check_body=$(printf '%s' "$config" | jq -r '.readiness.dependencies.check_body_references // true')
   
   if [[ "$check_body" != "true" ]]; then
     return 0
@@ -116,7 +116,7 @@ readiness_check_dependencies() {
   
   # Get issue body
   local body
-  body=$(echo "$issue_json" | jq -r '.body // ""')
+  body=$(printf '%s' "$issue_json" | jq -r '.body // ""')
   local body_lower
   body_lower=$(echo "$body" | tr '[:upper:]' '[:lower:]')
   
@@ -164,15 +164,15 @@ readiness_calculate_priority() {
   
   # Get priority label weights
   local priority_labels
-  priority_labels=$(echo "$config" | jq -c '.readiness.priority.labels // []')
+  priority_labels=$(printf '%s' "$config" | jq -c '.readiness.priority.labels // []')
   
   # Get age weight
   local age_weight
-  age_weight=$(echo "$config" | jq -r '.readiness.priority.age_weight // 1')
+  age_weight=$(printf '%s' "$config" | jq -r '.readiness.priority.age_weight // 1')
   
   # Get issue labels (lowercase)
   local issue_labels
-  issue_labels=$(echo "$issue_json" | jq -r '[.labels[]?.name // empty] | map(ascii_downcase)')
+  issue_labels=$(printf '%s' "$issue_json" | jq -r '[.labels[]?.name // empty] | map(ascii_downcase)')
   
   # Calculate label score (take highest matching weight)
   local label_score=0
@@ -181,22 +181,22 @@ readiness_calculate_priority() {
     [[ -z "$entry" ]] && continue
     
     local label
-    label=$(echo "$entry" | jq -r '.label' | tr '[:upper:]' '[:lower:]')
-    weight=$(echo "$entry" | jq -r '.weight // 0')
+    label=$(printf '%s' "$entry" | jq -r '.label' | tr '[:upper:]' '[:lower:]')
+    weight=$(printf '%s' "$entry" | jq -r '.weight // 0')
     
     # Check if issue has this label
     local has_label
-    has_label=$(echo "$issue_labels" | jq --arg l "$label" 'index($l) != null')
+    has_label=$(printf '%s' "$issue_labels" | jq --arg l "$label" 'index($l) != null')
     
     if [[ "$has_label" == "true" ]] && [[ "$weight" -gt "$label_score" ]]; then
       label_score=$weight
     fi
-  done < <(echo "$priority_labels" | jq -c '.[]')
+  done < <(printf '%s' "$priority_labels" | jq -c '.[]')
   
   # Calculate age bonus (days since creation * weight)
   # Handle both snake_case (tests) and camelCase (gh CLI) field names
   local created_at
-  created_at=$(echo "$issue_json" | jq -r '.created_at // .createdAt // empty')
+  created_at=$(printf '%s' "$issue_json" | jq -r '.created_at // .createdAt // empty')
   
   local age_bonus=0
   if [[ -n "$created_at" ]]; then
@@ -219,7 +219,7 @@ readiness_calculate_priority() {
   if [[ "$label_score" -eq 0 ]]; then
     # Milestone boost: issues in a milestone are likely more important
     local milestone
-    milestone=$(echo "$issue_json" | jq -r '.milestone.title // empty')
+    milestone=$(printf '%s' "$issue_json" | jq -r '.milestone.title // empty')
     if [[ -n "$milestone" ]]; then
       inferred_bonus=$((inferred_bonus + 20))
     fi
@@ -227,7 +227,7 @@ readiness_calculate_priority() {
     # Reactions boost: issues with positive reactions have community interest
     # Handle both REST API format (.reactions."+1") and gh CLI format (.reactionGroups)
     local reactions
-    reactions=$(echo "$issue_json" | jq -r '
+    reactions=$(printf '%s' "$issue_json" | jq -r '
       if .reactions then .reactions."+1" // .reactions.THUMBS_UP // 0
       elif .reactionGroups then [.reactionGroups[] | select(.content == "THUMBS_UP") | .users.totalCount // 0] | add // 0
       else 0 end
@@ -242,7 +242,7 @@ readiness_calculate_priority() {
     # Comment count boost: more discussion = more important
     # Handle both integer (REST API) and array (gh CLI) formats
     local comments
-    comments=$(echo "$issue_json" | jq -r '
+    comments=$(printf '%s' "$issue_json" | jq -r '
       if .comments | type == "array" then .comments | length
       else .comments // 0 end
     ')
@@ -255,7 +255,7 @@ readiness_calculate_priority() {
     
     # Assignee boost: assigned issues should be prioritized
     local assignee_count
-    assignee_count=$(echo "$issue_json" | jq '[.assignees // [] | length] | .[0]')
+    assignee_count=$(printf '%s' "$issue_json" | jq '[.assignees // [] | length] | .[0]')
     if [[ "$assignee_count" -gt 0 ]]; then
       inferred_bonus=$((inferred_bonus + 15))
     fi
@@ -308,27 +308,31 @@ readiness_evaluate_batch() {
   local repo_key="$2"
   
   local results=()
+  local count
+  count=$(printf '%s' "$issues_json" | jq 'length')
   
-  while IFS= read -r issue; do
+  for ((i=0; i<count; i++)); do
+    # Extract issue using jq index to avoid bash string handling issues
+    local issue
+    issue=$(printf '%s' "$issues_json" | jq -c ".[$i]")
+    
     [[ -z "$issue" ]] && continue
     
     local eval_result
     eval_result=$(readiness_evaluate "$issue" "$repo_key")
     
     local eligible score
-    eligible=$(echo "$eval_result" | jq -r '.eligible')
-    score=$(echo "$eval_result" | jq -r '.score')
+    eligible=$(printf '%s' "$eval_result" | jq -r '.eligible')
+    score=$(printf '%s' "$eval_result" | jq -r '.score')
     
-    # Build result with issue and evaluation
+    # Build result using jq slurp to avoid --argjson issues with special chars
     local result
-    result=$(jq -n \
-      --argjson issue "$issue" \
-      --argjson eligible "$eligible" \
-      --argjson score "$score" \
-      '{issue: $issue, eligible: $eligible, score: $score}')
+    result=$(printf '%s\n%s' "$issue" "$eval_result" | jq -s '
+      {issue: .[0], eligible: .[1].eligible, score: .[1].score}
+    ')
     
     results+=("$result")
-  done < <(echo "$issues_json" | jq -c '.[]')
+  done
   
   # Combine and sort by score descending
   printf '%s\n' "${results[@]}" | jq -s 'sort_by(-.score)'
