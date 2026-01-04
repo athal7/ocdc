@@ -1,16 +1,16 @@
 ---
-name: ocdc
+name: devcontainer
 description: Target a devcontainer for this session
 ---
 
-# /ocdc
+# /devcontainer
 
 Target a devcontainer clone for command execution in this OpenCode session.
 
 ## Usage
 
 ```
-/ocdc [target]
+/devcontainer [target]
 ```
 
 ## Arguments
@@ -24,10 +24,10 @@ Target a devcontainer clone for command execution in this OpenCode session.
 ## Examples
 
 ```
-/ocdc              # Show current devcontainer status
-/ocdc feature-x    # Target feature-x branch clone
-/ocdc myapp/main   # Target main branch of myapp
-/ocdc off          # Disable, run commands on host
+/devcontainer              # Show current devcontainer status
+/devcontainer feature-x    # Target feature-x branch clone
+/devcontainer myapp/main   # Target main branch of myapp
+/devcontainer off          # Disable, run commands on host
 ```
 
 ## Behavior

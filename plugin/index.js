@@ -38,19 +38,22 @@ async function installCommand(client) {
     if (!configDir) return
     
     const commandDir = join(configDir, "command")
-    const destFile = join(commandDir, "ocdc.md")
+    const destFile = join(commandDir, "devcontainer.md")
     
     // Always update command file to latest version
     mkdirSync(commandDir, { recursive: true })
-    const sourceFile = join(__dirname, "command/ocdc.md")
+    const sourceFile = join(__dirname, "command/devcontainer.md")
     if (existsSync(sourceFile)) {
       copyFileSync(sourceFile, destFile)
     }
     
-    // Clean up old command file name
-    const oldFile = join(commandDir, "ocdc-use.md")
-    if (existsSync(oldFile)) {
-      unlinkSync(oldFile)
+    // Clean up old command file names
+    const oldFiles = ["ocdc-use.md", "ocdc.md"]
+    for (const oldName of oldFiles) {
+      const oldFile = join(commandDir, oldName)
+      if (existsSync(oldFile)) {
+        unlinkSync(oldFile)
+      }
     }
   } catch {}
 }
@@ -137,7 +140,7 @@ export const OCDC = async ({ client }) => {
           try {
             execSync("which ocdc", { encoding: "utf-8", stdio: "pipe" })
           } catch {
-            return "ocdc CLI not found.\n\nInstall with: `brew install athal7/tap/ocdc`"
+            return "ocdc CLI not found.\n\nInstall with: `brew install athal7/tap/opencode-devcontainers`"
           }
           
           // Status request (no target)
@@ -145,13 +148,13 @@ export const OCDC = async ({ client }) => {
             const session = loadSession(sessionID)
             if (!session) {
               return "No devcontainer active for this session.\n\n" +
-                     "Use `/ocdc <branch>` to target a devcontainer."
+                     "Use `/devcontainer <branch>` to target a devcontainer."
             }
             const running = checkContainerRunning(session.workspace)
             return `Current devcontainer: ${session.repoName}/${session.branch}\n` +
                    `Workspace: ${session.workspace}\n` +
                    `Status: ${running ? "Running" : "Not running"}\n` +
-                   `\nUse \`/ocdc off\` to disable.`
+                   `\nUse \`/devcontainer off\` to disable.`
           }
           
           // Disable request
@@ -189,7 +192,7 @@ export const OCDC = async ({ client }) => {
                 return `Workspace created and session now targeting: ${newResolved.repoName}/${newResolved.branch}\n` +
                        `Workspace: ${newResolved.workspace}\n\n` +
                        `All commands will run inside this container.\n` +
-                       `Use \`/ocdc off\` to disable, or prefix with \`HOST:\` to run on host.`
+                       `Use \`/devcontainer off\` to disable, or prefix with \`HOST:\` to run on host.`
               }
               return `Workspace created but could not auto-target.`
             } catch (err) {
@@ -214,7 +217,7 @@ export const OCDC = async ({ client }) => {
               .map(m => `  - ${m.repoName}/${m.branch}`)
               .join("\n")
             return `Ambiguous branch '${target}' found in multiple repos:\n${options}\n\n` +
-                   `Use \`/ocdc <repo>/${target}\` to specify.`
+                   `Use \`/devcontainer <repo>/${target}\` to specify.`
           }
           
           const { workspace, repoName, branch } = resolved
@@ -236,7 +239,7 @@ export const OCDC = async ({ client }) => {
               return `Container started and session now targeting: ${repoName}/${branch}\n` +
                      `Workspace: ${workspace}\n\n` +
                      `All commands will run inside this container.\n` +
-                     `Use \`/ocdc off\` to disable, or prefix with \`HOST:\` to run on host.`
+                     `Use \`/devcontainer off\` to disable, or prefix with \`HOST:\` to run on host.`
             } catch (err) {
               if (err.name === 'AbortError') {
                 return `Container start cancelled.`
@@ -265,7 +268,7 @@ export const OCDC = async ({ client }) => {
           return `Session now targeting: ${repoName}/${branch}\n` +
                  `Workspace: ${workspace}\n\n` +
                  `All commands will run inside this container.\n` +
-                 `Use \`/ocdc off\` to disable, or prefix with \`HOST:\` to run on host.`
+                 `Use \`/devcontainer off\` to disable, or prefix with \`HOST:\` to run on host.`
         }
       }),
     },
