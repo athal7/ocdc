@@ -64,7 +64,10 @@ ocdc clean              # Remove orphaned clones
 ```json
 {
   "portRangeStart": 13000,
-  "portRangeEnd": 13099
+  "portRangeEnd": 13099,
+  "poll": {
+    "maxConcurrent": 3
+  }
 }
 ```
 
@@ -186,14 +189,20 @@ ocdc poll --once
 
 ### Parallel Processing
 
-By default, items are processed sequentially. Use `--max-concurrent` to process multiple items in parallel, significantly speeding up session creation when you have many pending items:
+By default, items are processed sequentially. Configure `poll.maxConcurrent` in your config file to process multiple items in parallel:
+
+```json
+{
+  "poll": {
+    "maxConcurrent": 3
+  }
+}
+```
+
+Or use `--max-concurrent` for a one-time override:
 
 ```bash
-# Process up to 3 items simultaneously
 ocdc poll --max-concurrent 3
-
-# Preview what would be processed
-ocdc poll --dry-run --max-concurrent 3
 ```
 
 **Note**: Each devcontainer creation runs `docker build` which can be resource-intensive. Start with 2-3 concurrent jobs and increase if your system handles it well.

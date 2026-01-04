@@ -321,6 +321,28 @@ test_poll_max_concurrent_rejects_zero() {
   assert_contains "$output" "must be a positive integer"
 }
 
+test_poll_max_concurrent_from_config() {
+  # Create config with maxConcurrent
+  echo '{"poll": {"maxConcurrent": 5}}' > "$TEST_CONFIG_DIR/config.json"
+  
+  local output
+  output=$("$BIN_DIR/ocdc" poll --dry-run --verbose 2>&1)
+  
+  # Should show "max concurrent: 5" in verbose output
+  assert_contains "$output" "max concurrent: 5"
+}
+
+test_poll_max_concurrent_cli_overrides_config() {
+  # Create config with maxConcurrent
+  echo '{"poll": {"maxConcurrent": 5}}' > "$TEST_CONFIG_DIR/config.json"
+  
+  local output
+  output=$("$BIN_DIR/ocdc" poll --dry-run --verbose --max-concurrent 2 2>&1)
+  
+  # CLI should override config
+  assert_contains "$output" "max concurrent: 2"
+}
+
 # =============================================================================
 # Tests: Log rotation
 # =============================================================================
@@ -504,7 +526,9 @@ for test_func in \
   test_poll_help_shows_max_concurrent \
   test_poll_max_concurrent_accepts_value \
   test_poll_max_concurrent_rejects_invalid \
-  test_poll_max_concurrent_rejects_zero
+  test_poll_max_concurrent_rejects_zero \
+  test_poll_max_concurrent_from_config \
+  test_poll_max_concurrent_cli_overrides_config
 do
   setup
   run_test "${test_func#test_}" "$test_func"

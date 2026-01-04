@@ -35,6 +35,15 @@ mkdir -p "$OCDC_POLL_STATE_DIR"
 mkdir -p "$OCDC_POLL_LOG_DIR"
 [[ -f "$STATE_FILE" ]] || echo '{}' > "$STATE_FILE"
 
+# Load config defaults from config.json
+DEFAULT_MAX_CONCURRENT=1
+if [[ -f "$OCDC_CONFIG_FILE" ]]; then
+  CONFIG_MAX_CONCURRENT=$(jq -r '.poll.maxConcurrent // .maxConcurrent // empty' "$OCDC_CONFIG_FILE" 2>/dev/null || true)
+  if [[ -n "$CONFIG_MAX_CONCURRENT" ]] && [[ "$CONFIG_MAX_CONCURRENT" =~ ^[0-9]+$ ]] && [[ "$CONFIG_MAX_CONCURRENT" -gt 0 ]]; then
+    DEFAULT_MAX_CONCURRENT="$CONFIG_MAX_CONCURRENT"
+  fi
+fi
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -49,7 +58,7 @@ VERBOSE=false
 DAEMON=false
 INTERVAL=300
 SKIP_CLEANUP=false
-MAX_CONCURRENT=1
+MAX_CONCURRENT=""  # Will be set from config or CLI
 
 # Current poll ID for structured logging
 CURRENT_POLL_ID=""
@@ -978,6 +987,11 @@ main() {
   
   # Check dependencies after parsing arguments
   check_dependencies || exit 1
+  
+  # Apply default max concurrent if not set via CLI
+  MAX_CONCURRENT="${MAX_CONCURRENT:-$DEFAULT_MAX_CONCURRENT}"
+  
+  [[ "$VERBOSE" == "true" ]] && log "Config: max concurrent: $MAX_CONCURRENT"
   
   if [[ "$DAEMON" == "true" ]]; then
     log "Starting poll daemon (interval: ${INTERVAL}s)"
