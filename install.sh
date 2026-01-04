@@ -12,7 +12,7 @@ set -euo pipefail
 INSTALL_DIR="${1:-$HOME/.local/bin}"
 LIB_DIR="$INSTALL_DIR/../lib"
 REPO="athal7/ocdc"
-LIB_SCRIPTS="ocdc-up ocdc-down ocdc-list ocdc-exec ocdc-go ocdc-tui ocdc-clean ocdc-poll ocdc-paths.bash ocdc-sessions.bash ocdc-poll-config.bash ocdc-poll-defaults.bash ocdc-poll-fetch.bash ocdc-poll-filter.bash ocdc-file-lock.bash ocdc-yaml.bash"
+LIB_SCRIPTS="ocdc-up ocdc-down ocdc-list ocdc-exec ocdc-go ocdc-tui ocdc-clean ocdc-poll ocdc-paths.bash ocdc-sessions.bash ocdc-poll-config.bash ocdc-poll-defaults.bash ocdc-poll-fetch.bash ocdc-poll-filter.bash ocdc-file-lock.bash ocdc-yaml.bash ocdc-mcp-fetch.js"
 
 echo "Installing ocdc to $INSTALL_DIR"
 
@@ -40,6 +40,16 @@ if [[ -n "$SCRIPT_DIR" ]] && [[ -f "$SCRIPT_DIR/bin/ocdc" ]]; then
       echo "  Installed: lib/$script"
     fi
   done
+  
+  # Install Node.js dependencies for MCP fetch
+  if [[ -f "$SCRIPT_DIR/package.json" ]]; then
+    cp "$SCRIPT_DIR/package.json" "$LIB_DIR/package.json"
+    cp "$SCRIPT_DIR/package-lock.json" "$LIB_DIR/package-lock.json" 2>/dev/null || true
+    echo "  Installing Node.js dependencies..."
+    (cd "$LIB_DIR" && npm ci --omit=dev --silent 2>/dev/null) || \
+    (cd "$LIB_DIR" && npm install --omit=dev --silent 2>/dev/null) || \
+      echo "  WARNING: npm install failed. Poll MCP sources may not work."
+  fi
 else
   # Remote install - download from GitHub
   echo "Downloading from GitHub..."
@@ -65,6 +75,17 @@ else
       exit 1
     fi
   done
+  
+  # Download and install Node.js dependencies for MCP fetch
+  echo "  Downloading: package.json"
+  curl -fsSL "https://raw.githubusercontent.com/$REPO/main/package.json" -o "$LIB_DIR/package.json" || true
+  curl -fsSL "https://raw.githubusercontent.com/$REPO/main/package-lock.json" -o "$LIB_DIR/package-lock.json" 2>/dev/null || true
+  if [[ -f "$LIB_DIR/package.json" ]]; then
+    echo "  Installing Node.js dependencies..."
+    (cd "$LIB_DIR" && npm ci --omit=dev --silent 2>/dev/null) || \
+    (cd "$LIB_DIR" && npm install --omit=dev --silent 2>/dev/null) || \
+      echo "  WARNING: npm install failed. Poll MCP sources may not work."
+  fi
 fi
 
 # Check if install dir is in PATH
@@ -83,6 +104,11 @@ echo "Checking dependencies..."
 missing_deps=false
 if ! command -v jq >/dev/null 2>&1; then
   echo "  WARNING: jq not found. Install with: brew install jq"
+  missing_deps=true
+fi
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "  WARNING: node not found. Required for poll MCP sources. Install with: brew install node"
   missing_deps=true
 fi
 

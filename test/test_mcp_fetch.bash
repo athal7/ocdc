@@ -307,6 +307,127 @@ EOF
 }
 
 # =============================================================================
+# Query Building Tests (via --dry-run flag)
+# =============================================================================
+
+test_mcp_fetch_github_pr_author_query() {
+  create_mock_mcp_config
+  
+  # Use --dry-run to see the query without connecting
+  local output
+  output=$(node "$MCP_FETCH" "github_pr" '{"author":"@me"}' --dry-run 2>&1) || true
+  
+  # Should include author in the query
+  if [[ "$output" != *"author:@me"* ]]; then
+    echo "Query should include author:@me"
+    echo "Got: $output"
+    return 1
+  fi
+  return 0
+}
+
+test_mcp_fetch_github_repos_array_query() {
+  create_mock_mcp_config
+  
+  # Use --dry-run to see the query without connecting
+  local output
+  output=$(node "$MCP_FETCH" "github_issue" '{"repos":["org/repo1","org/repo2"]}' --dry-run 2>&1) || true
+  
+  # Should include both repos in the query
+  if [[ "$output" != *"repo:org/repo1"* ]] || [[ "$output" != *"repo:org/repo2"* ]]; then
+    echo "Query should include both repos"
+    echo "Got: $output"
+    return 1
+  fi
+  return 0
+}
+
+test_mcp_fetch_github_pr_review_decision_query() {
+  create_mock_mcp_config
+  
+  # Use --dry-run to see the query without connecting
+  local output
+  output=$(node "$MCP_FETCH" "github_pr" '{"review_decision":"CHANGES_REQUESTED"}' --dry-run 2>&1) || true
+  
+  # Should include review decision in the query
+  if [[ "$output" != *"review:changes_requested"* ]]; then
+    echo "Query should include review:changes_requested"
+    echo "Got: $output"
+    return 1
+  fi
+  return 0
+}
+
+test_mcp_fetch_linear_team_query() {
+  create_mock_mcp_config
+  
+  # Use --dry-run to see the query without connecting
+  local output
+  output=$(node "$MCP_FETCH" "linear_issue" '{"team":"ENG"}' --dry-run 2>&1) || true
+  
+  # Should include team in the query params (as teamKey or team)
+  if [[ "$output" != *'"team": "ENG"'* ]] && [[ "$output" != *'"teamKey": "ENG"'* ]]; then
+    echo "Query should include team parameter"
+    echo "Got: $output"
+    return 1
+  fi
+  return 0
+}
+
+test_mcp_fetch_github_pr_combined_filters() {
+  create_mock_mcp_config
+  
+  # Use --dry-run to see the query without connecting
+  local output
+  output=$(node "$MCP_FETCH" "github_pr" '{"author":"@me","review_decision":"CHANGES_REQUESTED"}' --dry-run 2>&1) || true
+  
+  # Should include both author and review_decision
+  if [[ "$output" != *"author:@me"* ]]; then
+    echo "Query should include author"
+    echo "Got: $output"
+    return 1
+  fi
+  if [[ "$output" != *"review:changes_requested"* ]]; then
+    echo "Query should include review decision"
+    echo "Got: $output"
+    return 1
+  fi
+  return 0
+}
+
+test_mcp_fetch_empty_repos_array() {
+  create_mock_mcp_config
+  
+  # Use --dry-run to see the query without connecting
+  local output
+  output=$(node "$MCP_FETCH" "github_issue" '{"repos":[]}' --dry-run 2>&1) || true
+  
+  # Empty repos array should not add any repo: filters
+  # Query should just be "is:issue"
+  if [[ "$output" == *"repo:"* ]]; then
+    echo "Empty repos array should not add repo filters"
+    echo "Got: $output"
+    return 1
+  fi
+  return 0
+}
+
+test_mcp_fetch_review_decision_lowercase() {
+  create_mock_mcp_config
+  
+  # Verify different case variations are normalized
+  local output
+  output=$(node "$MCP_FETCH" "github_pr" '{"review_decision":"APPROVED"}' --dry-run 2>&1) || true
+  
+  if [[ "$output" != *"review:approved"* ]]; then
+    echo "APPROVED should be converted to lowercase"
+    echo "Got: $output"
+    return 1
+  fi
+  return 0
+}
+
+# =============================================================================
 # Run Tests
 # =============================================================================
 
@@ -325,7 +446,14 @@ for test_func in \
   test_mcp_fetch_handles_invalid_json \
   test_mcp_fetch_handles_empty_options \
   test_mcp_fetch_github_issue_uses_github_server \
-  test_mcp_fetch_linear_issue_uses_linear_server
+  test_mcp_fetch_linear_issue_uses_linear_server \
+  test_mcp_fetch_github_pr_author_query \
+  test_mcp_fetch_github_repos_array_query \
+  test_mcp_fetch_github_pr_review_decision_query \
+  test_mcp_fetch_linear_team_query \
+  test_mcp_fetch_github_pr_combined_filters \
+  test_mcp_fetch_empty_repos_array \
+  test_mcp_fetch_review_decision_lowercase
 do
   setup
   run_test "${test_func#test_}" "$test_func"

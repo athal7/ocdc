@@ -32,8 +32,15 @@
 #     }
 #   }
 #
-# All other settings (fetch options, item mapping, prompt, session) use
-# smart defaults based on source_type. Override only if needed.
+# Fetch options (defaults shown):
+#   fetch:
+#     review_requested: "@me"  # PRs requesting your review
+#     author: null             # Filter by PR author (e.g., "@me" for your PRs)
+#     review_decision: null    # Filter by review status: CHANGES_REQUESTED, APPROVED, REVIEW_REQUIRED
+#     state: "open"            # open, closed, or all
+#     repo: null               # Single repo (owner/repo)
+#     repos: null              # Multiple repos (array of owner/repo)
+#     org: null                # Filter by organization
 
 id: github-pr-reviews
 source_type: github_pr
@@ -45,3 +52,13 @@ repo_filters:
     repo_path: "~/code/backend"
   - repo: "owner/frontend"
     repo_path: "~/code/frontend"
+
+# Optional: Configure automatic cleanup when PRs are merged/closed
+# Defaults shown below - uncomment to customize
+# cleanup:
+#   on: [merged, closed]  # Terminal states that trigger cleanup
+#   delay: 5m             # Grace period before cleanup (default: 5m)
+#   actions:              # Actions to perform (in order)
+#     - kill_session      # Kill the tmux session
+#     - stop_container    # Stop the devcontainer
+#     # - remove_clone    # Uncomment to also remove clone directory

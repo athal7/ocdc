@@ -16,8 +16,8 @@ lock_file() {
   local max_age="${2:-60}"
   
   while ! mkdir "$lockdir" 2>/dev/null; do
-    # Check if existing lock is stale (older than max_age)
-    if [[ -d "$lockdir" ]]; then
+    # Check if something exists at lock path (could be file or directory)
+    if [[ -e "$lockdir" ]]; then
       local lock_mtime now lock_age
       # Cross-platform mtime: Linux uses -c %Y, macOS uses -f %m
       lock_mtime=$(stat -c %Y "$lockdir" 2>/dev/null) || lock_mtime=$(stat -f %m "$lockdir" 2>/dev/null) || lock_mtime=0
@@ -25,8 +25,12 @@ lock_file() {
       lock_age=$((now - lock_mtime))
       
       if [[ $lock_age -gt $max_age ]]; then
-        # Lock is stale - try to remove it and retry
-        rmdir "$lockdir" 2>/dev/null || true
+        # Lock is stale - remove it (handles both files and directories)
+        if [[ -d "$lockdir" ]]; then
+          rmdir "$lockdir" 2>/dev/null || true
+        else
+          rm -f "$lockdir" 2>/dev/null || true
+        fi
         continue
       fi
     fi

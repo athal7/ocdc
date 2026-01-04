@@ -28,9 +28,18 @@
           "type": "string",
           "description": "Filter by assignee. Use @me for current user. (linear_issue, github_issue)"
         },
+        "author": {
+          "type": "string",
+          "description": "Filter by PR author. Use @me for current user. (github_pr)"
+        },
         "review_requested": {
           "type": "string",
           "description": "Filter by review requested. Use @me for current user. (github_pr)"
+        },
+        "review_decision": {
+          "type": "string",
+          "enum": ["CHANGES_REQUESTED", "APPROVED", "REVIEW_REQUIRED"],
+          "description": "Filter by review decision status. (github_pr)"
         },
         "state": {
           "oneOf": [
@@ -51,11 +60,20 @@
         },
         "repo": {
           "type": "string",
-          "description": "Limit to specific repository (owner/repo format)"
+          "description": "Limit to specific repository (owner/repo format). Mutually exclusive with repos."
+        },
+        "repos": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Limit to multiple repositories (owner/repo format). Mutually exclusive with repo. (github_issue, github_pr)"
         },
         "org": {
           "type": "string",
           "description": "Limit to specific organization"
+        },
+        "team": {
+          "type": "string",
+          "description": "Filter by Linear team key. (linear_issue)"
         }
       }
     },
@@ -179,6 +197,41 @@
           "description": "OpenCode agent to use. Defaults: github_pr=plan, others=build"
         }
       }
+    },
+    "cleanup": {
+      "type": "object",
+      "description": "Cleanup configuration for when source items are closed/merged. When enabled, ocdc poll will check for closed/merged PRs and issues, then clean up resources after a grace period.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to enable automatic cleanup detection and execution"
+        },
+        "on": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["merged", "closed", "completed", "cancelled"]
+          },
+          "default": ["merged", "closed"],
+          "description": "Terminal states that trigger cleanup. Use 'merged' for merged PRs, 'closed' for closed PRs/issues, 'completed'/'cancelled' for Linear issues."
+        },
+        "delay": {
+          "type": "string",
+          "pattern": "^[0-9]+[smh]?$",
+          "default": "5m",
+          "description": "Grace period before cleanup executes. Supports: 30s (seconds), 5m (minutes), 2h (hours). Plain number treated as minutes."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["kill_session", "stop_container", "remove_clone"]
+          },
+          "default": ["kill_session", "stop_container"],
+          "description": "Cleanup actions to perform in order. 'kill_session' kills the tmux session, 'stop_container' runs ocdc down, 'remove_clone' removes the clone directory (only if git is clean)."
+        }
+      }
     }
   },
   "not": {
@@ -206,6 +259,18 @@
       "repo_filters": [
         { "org": "myorg", "repo_path": "~/code/myorg" }
       ]
+    },
+    {
+      "id": "github-reviews-with-cleanup",
+      "source_type": "github_pr",
+      "repo_filters": [
+        { "org": "myorg", "repo_path": "~/code/myorg" }
+      ],
+      "cleanup": {
+        "on": ["merged", "closed"],
+        "delay": "5m",
+        "actions": ["kill_session", "stop_container", "remove_clone"]
+      }
     }
   ]
 }

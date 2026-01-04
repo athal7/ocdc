@@ -135,13 +135,46 @@ tail -f "$(brew --prefix)/var/log/ocdc-poll.log"
 Poll configs live in `~/.config/ocdc/polls/`. Each config defines:
 - `source_type` - One of: `github_issue`, `github_pr`, `linear_issue`
 - `repo_filters` - Rules for mapping items to local repositories
-- `fetch` - Optional fetch options (assignee, state, labels, etc.)
+- `fetch` - Optional fetch options (see below)
 - `prompt.template` - Template for OpenCode session prompt (optional)
 - `session.name_template` - Template for tmux session name (optional)
+- `cleanup` - Optional cleanup configuration for merged/closed items
+
+**Fetch options by source type:**
+
+| Option | github_issue | github_pr | linear_issue |
+|--------|--------------|-----------|--------------|
+| `assignee` | `@me` | - | `@me` |
+| `author` | - | filter by PR author | - |
+| `review_requested` | - | `@me` | - |
+| `review_decision` | - | CHANGES_REQUESTED, APPROVED, REVIEW_REQUIRED | - |
+| `state` | open/closed | open/closed | array of states |
+| `labels` | array | - | - |
+| `exclude_labels` | - | - | array |
+| `repo` | owner/repo | owner/repo | - |
+| `repos` | array of repos | array of repos | - |
+| `org` | organization | organization | - |
+| `team` | - | - | team key |
 
 **Available template variables**: `{key}`, `{repo}`, `{repo_short}`, `{number}`, `{title}`, `{body}`, `{url}`, `{branch}`
 
 Example configs are installed to `$(brew --prefix)/share/ocdc/examples/` and documented in the [examples directory](share/ocdc/examples/).
+
+### Automatic Cleanup
+
+When PRs are merged or closed, ocdc automatically detects this and cleans up resources after a configurable grace period:
+
+```yaml
+cleanup:
+  on: [merged, closed]  # Terminal states that trigger cleanup
+  delay: 5m             # Grace period before cleanup (default: 5 minutes)
+  actions:              # Actions to perform (in order)
+    - kill_session      # Kill the tmux session
+    - stop_container    # Stop the devcontainer
+    - remove_clone      # Remove the clone directory (only if git is clean)
+```
+
+**Safety**: The `remove_clone` action will skip directories with uncommitted or unpushed changes.
 
 ### Manual Polling
 
@@ -166,7 +199,13 @@ The poll system handles errors gracefully with automatic retries:
 
 **Backoff strategy**: 1m → 2m → 4m → 8m... (max 1 hour) with 20% jitter
 
-Error state is tracked in `~/.cache/ocdc/poll/processed.json`. Items that fail 3 times will not be retried until manually cleared.
+Error state is tracked in `~/.cache/ocdc/poll/errors.json`. Items that fail 3 times will not be retried until manually cleared.
+
+Use `--skip-cleanup` to disable cleanup detection (for debugging):
+
+```bash
+ocdc poll --once --skip-cleanup
+```
 
 ## License
 

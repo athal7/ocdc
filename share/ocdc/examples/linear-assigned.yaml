@@ -23,11 +23,19 @@
 #     }
 #   }
 #
-# All other settings (fetch options, item mapping, prompt, session) use
-# smart defaults based on source_type. Override only if needed.
+# Fetch options:
+#   fetch:
+#     assignee: "@me"                      # Issues assigned to you (use null for any)
+#     state: ["started", "unstarted"]      # Filter by state(s)
+#     exclude_labels: []                   # Exclude issues with these labels
+#     team: "ENG"                          # Filter by team key
 
 id: linear-assigned
 source_type: linear_issue
+
+# Fetch issues assigned to me
+fetch:
+  assignee: "@me"
 
 # Map Linear teams/labels to local repositories
 # Most specific rule wins (team+labels > labels > team)

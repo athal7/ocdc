@@ -21,6 +21,8 @@ source "${SCRIPT_DIR}/ocdc-paths.bash"
 source "${SCRIPT_DIR}/ocdc-poll-config.bash"
 source "${SCRIPT_DIR}/ocdc-file-lock.bash"
 source "${SCRIPT_DIR}/ocdc-poll-errors.bash"
+source "${SCRIPT_DIR}/ocdc-poll-cleanup.bash"
+source "${SCRIPT_DIR}/ocdc-sessions.bash"
 
 # Ensure ocdc commands are available
 export PATH="$BIN_DIR:$PATH"
@@ -46,6 +48,7 @@ SINGLE_CONFIG=""
 VERBOSE=false
 DAEMON=false
 INTERVAL=300
+SKIP_CLEANUP=false
 
 # Current poll ID for structured logging
 CURRENT_POLL_ID=""
@@ -413,6 +416,7 @@ show_help() {
 Usage: ocdc poll [command] [options]
 
 Poll configured sources and spawn OpenCode sessions for new items.
+Automatically detects merged/closed PRs and cleans up resources.
 
 Commands:
   sessions            List active poll-created sessions
@@ -426,8 +430,15 @@ Options:
   --interval <secs>   Poll interval in seconds (default: 300, requires --daemon)
   --dry-run           Show what would be done without executing
   --config <id>       Only run specific config by id
+  --skip-cleanup      Skip cleanup detection phase (for debugging)
   --verbose           Show detailed output
   --help              Show this help
+
+Cleanup:
+  PRs/issues that are merged or closed are automatically detected.
+  After a configurable grace period (default: 5 minutes), cleanup
+  actions are executed: kill tmux session, stop container, optionally
+  remove clone directory. Configure via 'cleanup' section in poll config.
 
 Examples:
   ocdc poll                    # Run all enabled polls once
@@ -523,15 +534,19 @@ process_poll() {
   # Execute fetch command with error handling
   log "  Fetching items..."
   [[ "$VERBOSE" == "true" ]] && log "  Command: $fetch_cmd"
-  local items_json fetch_output fetch_exit_code
-  fetch_output=$(bash -c "$fetch_cmd" 2>&1) || fetch_exit_code=$?
+  local items_json fetch_output fetch_stderr fetch_exit_code
+  # Capture stdout and stderr separately - MCP servers may output to stderr
+  fetch_stderr=$(mktemp)
+  fetch_output=$(bash -c "$fetch_cmd" 2>"$fetch_stderr") || fetch_exit_code=$?
   fetch_exit_code=${fetch_exit_code:-0}
   
   # Handle fetch errors based on exit code from ocdc-mcp-fetch.js
   # Exit codes: 0=success, 10=not configured, 11=connection failed, 12=tool not found, 13=tool failed
   if [[ $fetch_exit_code -ne 0 ]]; then
     local error_type="$ERR_NETWORK_TIMEOUT"  # Default
-    local error_msg="$fetch_output"
+    local error_msg
+    error_msg=$(cat "$fetch_stderr")
+    rm -f "$fetch_stderr"
     
     case $fetch_exit_code in
       10)
@@ -577,6 +592,7 @@ process_poll() {
         ;;
     esac
   fi
+  rm -f "$fetch_stderr"
   
   items_json="$fetch_output"
   
@@ -853,6 +869,10 @@ main() {
         VERBOSE=true
         shift
         ;;
+      --skip-cleanup)
+        SKIP_CLEANUP=true
+        shift
+        ;;
       --help|-h)
         show_help
         exit 0
@@ -881,6 +901,10 @@ main() {
 }
 
 # Run one poll cycle
+# Phases:
+# 1. Cleanup detection: check active sessions for closed/merged PRs
+# 2. Cleanup execution: process items in cleanup queue that are ready
+# 3. Fetch and process: fetch new items and create sessions
 run_poll_cycle() {
   # Find poll configs
   if [[ ! -d "$OCDC_POLLS_DIR" ]]; then
@@ -888,6 +912,17 @@ run_poll_cycle() {
     return 0
   fi
   
+  # Phase 1: Cleanup detection (unless skipped)
+  if [[ "$SKIP_CLEANUP" != "true" ]]; then
+    run_cleanup_detection_phase
+  fi
+  
+  # Phase 2: Cleanup execution (unless skipped or dry-run)
+  if [[ "$SKIP_CLEANUP" != "true" ]] && [[ "$DRY_RUN" != "true" ]]; then
+    run_cleanup_execution_phase
+  fi
+  
+  # Phase 3: Fetch and process new items
   local found_configs=false
   
   for config_file in "$OCDC_POLLS_DIR"/*.yaml "$OCDC_POLLS_DIR"/*.yml; do
@@ -916,6 +951,178 @@ run_poll_cycle() {
   fi
   
   log "Poll cycle complete"
+}
+
+# =============================================================================
+# Cleanup Detection Phase
+# =============================================================================
+
+# Check all active poll sessions for items that should be cleaned up
+run_cleanup_detection_phase() {
+  log "Checking for closed/merged items..."
+  
+  local sessions_json
+  sessions_json=$(ocdc_list_poll_sessions)
+  
+  local session_count
+  session_count=$(echo "$sessions_json" | jq 'length')
+  
+  if [[ "$session_count" == "0" ]]; then
+    [[ "$VERBOSE" == "true" ]] && log "  No active poll sessions to check"
+    return 0
+  fi
+  
+  [[ "$VERBOSE" == "true" ]] && log "  Checking $session_count active session(s)"
+  
+  # Process each session
+  echo "$sessions_json" | jq -c '.[]' | while read -r session; do
+    local session_name source_type source_url item_key workspace poll_config
+    session_name=$(echo "$session" | jq -r '.name')
+    source_type=$(echo "$session" | jq -r '.source_type')
+    source_url=$(echo "$session" | jq -r '.source_url')
+    item_key=$(echo "$session" | jq -r '.item_key')
+    workspace=$(echo "$session" | jq -r '.workspace')
+    poll_config=$(echo "$session" | jq -r '.poll_config')
+    
+    # Skip if already queued for cleanup
+    if cleanup_queue_is_queued "$item_key"; then
+      [[ "$VERBOSE" == "true" ]] && log "  Skipping $item_key (already queued for cleanup)"
+      continue
+    fi
+    
+    # Skip if no source URL (can't check state)
+    if [[ -z "$source_url" ]] || [[ "$source_url" == "null" ]]; then
+      continue
+    fi
+    
+    # Check if item should be cleaned up
+    local state_result
+    state_result=$(cleanup_check_source_state "$source_type" "$source_url")
+    
+    local should_cleanup reason
+    should_cleanup=$(echo "$state_result" | jq -r '.should_cleanup')
+    reason=$(echo "$state_result" | jq -r '.reason // empty')
+    
+    if [[ "$should_cleanup" == "true" ]]; then
+      # Get cleanup config for this poll
+      local cleanup_config delay
+      cleanup_config=$(get_cleanup_config_for_poll "$poll_config")
+      
+      # Check if this reason triggers cleanup
+      if ! cleanup_should_trigger_for_reason "$cleanup_config" "$reason"; then
+        [[ "$VERBOSE" == "true" ]] && log "  Skipping $item_key ($reason not in cleanup triggers)"
+        continue
+      fi
+      
+      delay=$(echo "$cleanup_config" | jq -r '.delay // "5m"')
+      
+      log "  Detected $reason: $item_key"
+      
+      if [[ "$DRY_RUN" == "true" ]]; then
+        log "  [DRY-RUN] Would queue for cleanup (delay: $delay)"
+      else
+        cleanup_queue_add \
+          "$item_key" \
+          "$poll_config" \
+          "$reason" \
+          "$session_name" \
+          "$workspace" \
+          "$source_url" \
+          "$source_type" \
+          "$delay"
+        log "  Queued for cleanup (delay: $delay)"
+      fi
+    fi
+  done
+}
+
+# Get cleanup config for a poll ID
+# Returns JSON with cleanup config (with defaults applied)
+get_cleanup_config_for_poll() {
+  local poll_id="$1"
+  
+  # Find the config file for this poll ID
+  local config_file
+  for f in "$OCDC_POLLS_DIR"/*.yaml "$OCDC_POLLS_DIR"/*.yml; do
+    [[ -f "$f" ]] || continue
+    local id
+    id=$(poll_config_get "$f" ".id" 2>/dev/null || true)
+    if [[ "$id" == "$poll_id" ]]; then
+      config_file="$f"
+      break
+    fi
+  done
+  
+  if [[ -z "$config_file" ]]; then
+    # Return defaults if config not found
+    cleanup_get_config_with_defaults '{}'
+    return 0
+  fi
+  
+  # Get cleanup config from file
+  local cleanup_json
+  cleanup_json=$(poll_config_get "$config_file" ".cleanup // {}" 2>/dev/null || echo '{}')
+  cleanup_get_config_with_defaults "$cleanup_json"
+}
+
+# =============================================================================
+# Cleanup Execution Phase
+# =============================================================================
+
+# Process items in the cleanup queue that are ready
+run_cleanup_execution_phase() {
+  local ready_count=0
+  
+  # Count ready items first
+  while IFS= read -r item; do
+    [[ -z "$item" ]] && continue
+    ready_count=$((ready_count + 1))
+  done < <(cleanup_queue_get_ready)
+  
+  if [[ $ready_count -eq 0 ]]; then
+    [[ "$VERBOSE" == "true" ]] && log "No items ready for cleanup"
+    return 0
+  fi
+  
+  log "Processing $ready_count cleanup item(s)..."
+  
+  # Process each ready item
+  while IFS= read -r item; do
+    [[ -z "$item" ]] && continue
+    
+    local key tmux_session clone_path poll_id reason
+    key=$(echo "$item" | jq -r '.key')
+    tmux_session=$(echo "$item" | jq -r '.tmux_session')
+    clone_path=$(echo "$item" | jq -r '.clone_path')
+    poll_id=$(echo "$item" | jq -r '.poll_id')
+    reason=$(echo "$item" | jq -r '.reason')
+    
+    log "  Cleaning up: $key ($reason)"
+    
+    # Get cleanup actions from config
+    local cleanup_config actions_json
+    cleanup_config=$(get_cleanup_config_for_poll "$poll_id")
+    actions_json=$(echo "$cleanup_config" | jq -c '.actions')
+    
+    # Execute cleanup
+    cleanup_execute_all "$tmux_session" "$clone_path" "$actions_json"
+    
+    # Remove from queue
+    cleanup_queue_remove "$key"
+    
+    # Clear from processed.json state
+    if [[ -f "$STATE_FILE" ]]; then
+      local tmp
+      tmp=$(mktemp)
+      if jq --arg key "$key" 'del(.[$key])' "$STATE_FILE" > "$tmp" 2>/dev/null; then
+        mv "$tmp" "$STATE_FILE"
+      else
+        rm -f "$tmp"
+      fi
+    fi
+    
+    log_success "  Completed cleanup: $key"
+  done < <(cleanup_queue_get_ready)
 }
 
 main "$@"

@@ -280,6 +280,48 @@ EOF
 }
 
 # =============================================================================
+# Tests: --max-concurrent option
+# =============================================================================
+
+test_poll_help_shows_max_concurrent() {
+  local output
+  output=$("$BIN_DIR/ocdc" poll --help 2>&1)
+  assert_contains "$output" "--max-concurrent"
+}
+
+test_poll_max_concurrent_accepts_value() {
+  # Should not error with valid --max-concurrent value
+  local output
+  output=$("$BIN_DIR/ocdc" poll --dry-run --max-concurrent 3 2>&1)
+  # Should complete without "Unknown option" error
+  if [[ "$output" == *"Unknown option"* ]]; then
+    echo "Should accept --max-concurrent option"
+    return 1
+  fi
+  return 0
+}
+
+test_poll_max_concurrent_rejects_invalid() {
+  # Should error with non-numeric value
+  local output
+  if output=$("$BIN_DIR/ocdc" poll --dry-run --max-concurrent invalid 2>&1); then
+    echo "Should reject non-numeric --max-concurrent"
+    return 1
+  fi
+  assert_contains "$output" "must be a positive integer"
+}
+
+test_poll_max_concurrent_rejects_zero() {
+  # Should error with zero value
+  local output
+  if output=$("$BIN_DIR/ocdc" poll --dry-run --max-concurrent 0 2>&1); then
+    echo "Should reject --max-concurrent 0"
+    return 1
+  fi
+  assert_contains "$output" "must be a positive integer"
+}
+
+# =============================================================================
 # Tests: Log rotation
 # =============================================================================
 
@@ -449,6 +491,20 @@ for test_func in \
   test_poll_logs_no_file_shows_warning \
   test_poll_logs_shows_recent_logs \
   test_poll_logs_filter_by_poll
+do
+  setup
+  run_test "${test_func#test_}" "$test_func"
+  teardown
+done
+
+echo ""
+echo "Max Concurrent Option Tests:"
+
+for test_func in \
+  test_poll_help_shows_max_concurrent \
+  test_poll_max_concurrent_accepts_value \
+  test_poll_max_concurrent_rejects_invalid \
+  test_poll_max_concurrent_rejects_zero
 do
   setup
   run_test "${test_func#test_}" "$test_func"

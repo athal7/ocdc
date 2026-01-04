@@ -78,6 +78,53 @@ test_lock_file_blocks_second_lock() {
   return 0
 }
 
+test_lock_file_recovers_from_stale_file_lock() {
+  # Regression test for stale file locks (not directories) left by legacy code
+  # This was the root cause of poll blocking for days - a file at the lock path
+  # would cause mkdir to fail, but -d test would also fail, resulting in infinite loop
+  source "$LIB_DIR/ocdc-file-lock.bash"
+  
+  local lockfile="$TEST_DIR/stale-file.lock"
+  
+  # Create a stale lock FILE (not directory) - simulates legacy locking or corruption
+  touch "$lockfile"
+  
+  # Set mtime to 120 seconds ago
+  local old_time
+  old_time=$(date -v-120S +%Y%m%d%H%M 2>/dev/null || date -d '120 seconds ago' +%Y%m%d%H%M 2>/dev/null)
+  touch -t "$old_time" "$lockfile" 2>/dev/null || touch -d '120 seconds ago' "$lockfile" 2>/dev/null
+  
+  # Try to acquire the lock - should succeed by removing stale file
+  local result_file="$TEST_DIR/lock_result"
+  (
+    source "$LIB_DIR/ocdc-file-lock.bash"
+    lock_file "$lockfile" 1  # 1-second max_age for faster test
+    echo "acquired" > "$result_file"
+  ) &
+  local bg_pid=$!
+  
+  # Wait up to 2 seconds for lock acquisition
+  local waited=0
+  while [[ $waited -lt 20 ]] && ! [[ -f "$result_file" ]]; do
+    sleep 0.1
+    ((waited++)) || true
+  done
+  
+  # Kill background process if still running
+  kill "$bg_pid" 2>/dev/null || true
+  wait "$bg_pid" 2>/dev/null || true
+  
+  if [[ ! -f "$result_file" ]] || [[ "$(cat "$result_file" 2>/dev/null)" != "acquired" ]]; then
+    echo "lock_file should recover from stale FILE lock (not just directory)"
+    rm -f "$lockfile" 2>/dev/null || true
+    return 1
+  fi
+  
+  # Cleanup
+  rmdir "$lockfile" 2>/dev/null || rm -f "$lockfile" 2>/dev/null || true
+  return 0
+}
+
 test_lock_file_recovers_from_stale_lock() {
   source "$LIB_DIR/ocdc-file-lock.bash"
   
@@ -277,6 +324,7 @@ echo "File Locking Tests:"
 for test_func in \
   test_lock_file_creates_lock_directory \
   test_lock_file_blocks_second_lock \
+  test_lock_file_recovers_from_stale_file_lock \
   test_lock_file_recovers_from_stale_lock \
   test_unlock_file_removes_lock_directory \
   test_unlock_file_succeeds_when_not_locked \
