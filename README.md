@@ -190,6 +190,78 @@ Use `--skip-cleanup` to disable cleanup detection (for debugging):
 ocdc poll --once --skip-cleanup
 ```
 
+### Self-Iteration (Automatic Issue Readiness)
+
+Self-iteration automatically evaluates and marks issues as ready for work based on priority, dependencies, and WIP limits. This creates a closed-loop system where ocdc manages its own work queue.
+
+**Enable in `~/.config/ocdc/config.json`:**
+
+```json
+{
+  "self_iteration": {
+    "enabled": true,
+    "ready_label": "ocdc:ready"
+  },
+  "wip_limits": {
+    "global_max": 5
+  }
+}
+```
+
+**Configure repositories in `~/.config/ocdc/repos.yaml`:**
+
+```yaml
+repos:
+  myorg/backend:
+    repo_path: ~/code/backend
+    issue_tracker:
+      type: github
+      repo: myorg/backend
+    readiness:
+      labels:
+        exclude: ["blocked", "needs-design"]
+      priority:
+        labels:
+          - label: critical
+            weight: 100
+          - label: high
+            weight: 50
+    wip_limits:
+      max_concurrent: 2
+```
+
+**How it works:**
+
+1. On each poll cycle, ocdc evaluates open issues for configured repos
+2. Issues are scored by priority (see below) with age as a tiebreaker (FIFO)
+3. Blocked issues are excluded (labels, body references, unchecked task lists)
+4. Top candidates are marked with the ready label (up to WIP limits)
+5. The regular poll cycle then picks up newly-ready issues
+
+**Priority scoring:**
+
+- **Explicit labels**: Configure weights for labels like `critical`, `high`, `medium`
+- **Inferred signals** (when no priority label):
+  - Milestone: +20 points (issues in a milestone are prioritized)
+  - Reactions: +5 per thumbs-up (capped at 30)
+  - Comments: +2 per comment (capped at 20)
+  - Assignee: +15 if assigned
+- **Age bonus**: +1 point per day since creation
+
+**Dependency detection:**
+
+- Body patterns: "blocked by #X", "depends on #X", "requires #X", "after #X"
+- Task lists: Issues with multiple unchecked checkboxes are considered tracking issues
+- Blocking labels: Configurable labels like `blocked`, `waiting-on-external`
+
+**Run evaluation only (no session creation):**
+
+```bash
+ocdc poll --evaluate-only
+```
+
+See `share/ocdc/examples/repos.yaml` for full configuration options.
+
 ## License
 
 MIT

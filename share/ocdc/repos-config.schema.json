@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/athal7/ocdc/repos-config.schema.json",
+  "title": "OCDC Repository Configuration",
+  "description": "Configuration schema for repository settings used by self-iteration",
+  "type": "object",
+  "required": ["repos"],
+  "properties": {
+    "repos": {
+      "type": "object",
+      "description": "Map of repository keys to their configuration",
+      "additionalProperties": {
+        "$ref": "#/$defs/RepoConfig"
+      }
+    }
+  },
+  "$defs": {
+    "RepoConfig": {
+      "type": "object",
+      "required": ["repo_path"],
+      "properties": {
+        "repo_path": {
+          "type": "string",
+          "description": "Local filesystem path to the repository (supports ~ expansion)"
+        },
+        "issue_tracker": {
+          "type": "object",
+          "description": "Issue tracker configuration",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["github", "linear"],
+              "default": "github",
+              "description": "Type of issue tracker"
+            },
+            "repo": {
+              "type": "string",
+              "description": "Repository identifier (owner/repo for GitHub, team key for Linear)"
+            },
+            "team": {
+              "type": "string",
+              "description": "Linear team key (for linear type)"
+            }
+          }
+        },
+        "readiness": {
+          "type": "object",
+          "description": "Criteria for determining issue readiness",
+          "properties": {
+            "labels": {
+              "type": "object",
+              "properties": {
+                "required": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "default": [],
+                  "description": "Labels that must ALL be present"
+                },
+                "any_of": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "default": [],
+                  "description": "At least ONE of these labels must be present"
+                },
+                "exclude": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "default": [],
+                  "description": "Labels that must NOT be present"
+                }
+              }
+            },
+            "priority": {
+              "type": "object",
+              "properties": {
+                "labels": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["label", "weight"],
+                    "properties": {
+                      "label": {
+                        "type": "string",
+                        "description": "Label name"
+                      },
+                      "weight": {
+                        "type": "integer",
+                        "description": "Priority weight (higher = more important)"
+                      }
+                    }
+                  },
+                  "description": "Labels with priority weights"
+                },
+                "age_weight": {
+                  "type": "number",
+                  "default": 1,
+                  "description": "Points added per day since issue creation"
+                }
+              }
+            },
+            "dependencies": {
+              "type": "object",
+              "properties": {
+                "check_body_references": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Check issue body for 'blocked by #X' patterns"
+                },
+                "check_github_dependencies": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Use GitHub's issue dependencies API (if available)"
+                },
+                "blocking_labels": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "default": ["blocked"],
+                  "description": "Labels that indicate blocking"
+                }
+              }
+            }
+          }
+        },
+        "wip_limits": {
+          "type": "object",
+          "properties": {
+            "max_concurrent": {
+              "type": "integer",
+              "default": 3,
+              "description": "Maximum concurrent sessions for this repository"
+            }
+          }
+        },
+        "comments": {
+          "type": "object",
+          "properties": {
+            "on_start": {
+              "type": "boolean",
+              "default": false,
+              "description": "Comment on issue when work starts"
+            },
+            "on_pr_created": {
+              "type": "boolean",
+              "default": false,
+              "description": "Comment on issue when PR is created"
+            }
+          }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "repos": {
+        "myorg/backend": {
+          "repo_path": "~/code/backend",
+          "issue_tracker": {
+            "type": "github",
+            "repo": "myorg/backend"
+          },
+          "wip_limits": {
+            "max_concurrent": 2
+          }
+        }
+      }
+    }
+  ]
+}

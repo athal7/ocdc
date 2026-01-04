@@ -22,6 +22,8 @@ source "${SCRIPT_DIR}/ocdc-poll-config.bash"
 source "${SCRIPT_DIR}/ocdc-file-lock.bash"
 source "${SCRIPT_DIR}/ocdc-poll-cleanup.bash"
 source "${SCRIPT_DIR}/ocdc-sessions.bash"
+source "${SCRIPT_DIR}/ocdc-self-iteration.bash"
+source "${SCRIPT_DIR}/ocdc-wip.bash"
 
 # Ensure ocdc commands are available
 export PATH="$BIN_DIR:$PATH"
@@ -48,6 +50,8 @@ VERBOSE=false
 DAEMON=false
 INTERVAL=300
 SKIP_CLEANUP=false
+SKIP_SELF_ITERATION=false
+EVALUATE_ONLY=false
 
 # Current poll ID for structured logging
 CURRENT_POLL_ID=""
@@ -416,6 +420,7 @@ Usage: ocdc poll [command] [options]
 
 Poll configured sources and spawn OpenCode sessions for new items.
 Automatically detects merged/closed PRs and cleans up resources.
+With self-iteration enabled, automatically marks issues as ready.
 
 Commands:
   sessions            List active poll-created sessions
@@ -430,6 +435,8 @@ Options:
   --dry-run           Show what would be done without executing
   --config <id>       Only run specific config by id
   --skip-cleanup      Skip cleanup detection phase (for debugging)
+  --skip-self-iter    Skip self-iteration phase
+  --evaluate-only     Only run self-iteration evaluation (no session creation)
   --verbose           Show detailed output
   --help              Show this help
 
@@ -439,10 +446,16 @@ Cleanup:
   actions are executed: kill tmux session, stop container, optionally
   remove clone directory. Configure via 'cleanup' section in poll config.
 
+Self-Iteration:
+  When enabled in ~/.config/ocdc/config.json, automatically evaluates
+  candidate issues and marks them with the ready label (ocdc:ready)
+  based on priority, dependencies, and WIP limits.
+
 Examples:
   ocdc poll                    # Run all enabled polls once
   ocdc poll --dry-run          # Preview what would happen
   ocdc poll --config github-issues  # Run only github-issues poll
+  ocdc poll --evaluate-only    # Only evaluate, don't create sessions
   ocdc poll sessions           # List active sessions
   ocdc poll attach issue-42    # Attach to a matching session
   ocdc poll logs --follow      # Follow poll logs
@@ -720,6 +733,9 @@ process_poll() {
     log_success "    Session $session_name created"
     log "    Attach with: tmux attach -t $session_name"
     mark_processed "$key" "$config_id"
+    
+    # Track in WIP state
+    wip_add_session "$key" "$repo" "medium"
   done
   
   # Clear poll ID after processing
@@ -769,6 +785,14 @@ main() {
         SKIP_CLEANUP=true
         shift
         ;;
+      --skip-self-iter|--skip-self-iteration)
+        SKIP_SELF_ITERATION=true
+        shift
+        ;;
+      --evaluate-only)
+        EVALUATE_ONLY=true
+        shift
+        ;;
       --help|-h)
         show_help
         exit 0
@@ -800,7 +824,8 @@ main() {
 # Phases:
 # 1. Cleanup detection: check active sessions for closed/merged PRs
 # 2. Cleanup execution: process items in cleanup queue that are ready
-# 3. Fetch and process: fetch new items and create sessions
+# 3. Self-iteration: evaluate and mark issues as ready (if enabled)
+# 4. Fetch and process: fetch new items and create sessions
 run_poll_cycle() {
   # Find poll configs
   if [[ ! -d "$OCDC_POLLS_DIR" ]]; then
@@ -809,16 +834,27 @@ run_poll_cycle() {
   fi
   
   # Phase 1: Cleanup detection (unless skipped)
-  if [[ "$SKIP_CLEANUP" != "true" ]]; then
+  if [[ "$SKIP_CLEANUP" != "true" ]] && [[ "$EVALUATE_ONLY" != "true" ]]; then
     run_cleanup_detection_phase
   fi
   
   # Phase 2: Cleanup execution (unless skipped or dry-run)
-  if [[ "$SKIP_CLEANUP" != "true" ]] && [[ "$DRY_RUN" != "true" ]]; then
+  if [[ "$SKIP_CLEANUP" != "true" ]] && [[ "$DRY_RUN" != "true" ]] && [[ "$EVALUATE_ONLY" != "true" ]]; then
     run_cleanup_execution_phase
   fi
   
-  # Phase 3: Fetch and process new items
+  # Phase 3: Self-iteration (if enabled and not skipped)
+  if [[ "$SKIP_SELF_ITERATION" != "true" ]]; then
+    run_self_iteration_phase
+  fi
+  
+  # Phase 4: Fetch and process new items (unless evaluate-only)
+  if [[ "$EVALUATE_ONLY" == "true" ]]; then
+    log "Evaluate-only mode, skipping session creation"
+    log "Poll cycle complete"
+    return 0
+  fi
+  
   local found_configs=false
   
   for config_file in "$OCDC_POLLS_DIR"/*.yaml "$OCDC_POLLS_DIR"/*.yml; do
@@ -847,6 +883,64 @@ run_poll_cycle() {
   fi
   
   log "Poll cycle complete"
+}
+
+# =============================================================================
+# Self-Iteration Phase
+# =============================================================================
+
+# Evaluate and mark issues as ready for configured repos
+run_self_iteration_phase() {
+  # Check if self-iteration is enabled
+  if ! self_iteration_is_enabled; then
+    [[ "$VERBOSE" == "true" ]] && log "Self-iteration disabled"
+    return 0
+  fi
+  
+  log "Running self-iteration evaluation..."
+  
+  # Sync WIP state with actual tmux sessions first
+  wip_sync_with_tmux
+  
+  # Get list of configured repos
+  local repos
+  repos=$(repo_config_list)
+  
+  if [[ -z "$repos" ]]; then
+    [[ "$VERBOSE" == "true" ]] && log "  No repos configured for self-iteration"
+    return 0
+  fi
+  
+  # Process each configured repo
+  while IFS= read -r repo_key; do
+    [[ -z "$repo_key" ]] && continue
+    
+    CURRENT_POLL_ID="self-iter:$repo_key"
+    
+    # Check available slots
+    local slots
+    slots=$(self_iteration_available_slots "$repo_key")
+    
+    if [[ "$slots" -le 0 ]]; then
+      [[ "$VERBOSE" == "true" ]] && log "  $repo_key: No slots available (at WIP limit)"
+      continue
+    fi
+    
+    log "  $repo_key: $slots slot(s) available"
+    
+    if [[ "$DRY_RUN" == "true" ]]; then
+      log "  [DRY-RUN] Would evaluate and mark issues for $repo_key"
+      continue
+    fi
+    
+    # Run self-iteration for this repo
+    local result
+    result=$(self_iteration_run "$repo_key" 2>&1) || true
+    
+    [[ "$VERBOSE" == "true" ]] && [[ -n "$result" ]] && log "  Result: $result"
+  done <<< "$repos"
+  
+  CURRENT_POLL_ID=""
 }
 
 # =============================================================================
@@ -1016,6 +1110,9 @@ run_cleanup_execution_phase() {
         rm -f "$tmp"
       fi
     fi
+    
+    # Remove from WIP state
+    wip_remove_session "$key"
     
     log_success "  Completed cleanup: $key"
   done < <(cleanup_queue_get_ready)
