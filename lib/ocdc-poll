@@ -20,6 +20,7 @@ BIN_DIR="$(dirname "$SCRIPT_DIR")/bin"
 source "${SCRIPT_DIR}/ocdc-paths.bash"
 source "${SCRIPT_DIR}/ocdc-poll-config.bash"
 source "${SCRIPT_DIR}/ocdc-file-lock.bash"
+source "${SCRIPT_DIR}/ocdc-poll-errors.bash"
 source "${SCRIPT_DIR}/ocdc-poll-cleanup.bash"
 source "${SCRIPT_DIR}/ocdc-sessions.bash"
 
@@ -48,6 +49,7 @@ VERBOSE=false
 DAEMON=false
 INTERVAL=300
 SKIP_CLEANUP=false
+MAX_CONCURRENT=1
 
 # Current poll ID for structured logging
 CURRENT_POLL_ID=""
@@ -96,12 +98,12 @@ _log_to_file() {
 
 log() {
   echo -e "${BLUE}[poll]${NC} $*" >&2
-  _log_to_file "$*"
+  _log_to_file "INFO: $*"
 }
 
 log_success() {
   echo -e "${GREEN}[poll]${NC} $*" >&2
-  _log_to_file "$*"
+  _log_to_file "INFO: $*"
 }
 
 log_warn() {
@@ -427,6 +429,7 @@ Options:
   --once              Run one poll cycle and exit (default behavior)
   --daemon            Run continuously, polling every interval
   --interval <secs>   Poll interval in seconds (default: 300, requires --daemon)
+  --max-concurrent N  Process up to N items in parallel (default: 1)
   --dry-run           Show what would be done without executing
   --config <id>       Only run specific config by id
   --skip-cleanup      Skip cleanup detection phase (for debugging)
@@ -442,6 +445,7 @@ Cleanup:
 Examples:
   ocdc poll                    # Run all enabled polls once
   ocdc poll --dry-run          # Preview what would happen
+  ocdc poll --max-concurrent 3 # Process 3 items in parallel
   ocdc poll --config github-issues  # Run only github-issues poll
   ocdc poll sessions           # List active sessions
   ocdc poll attach issue-42    # Attach to a matching session
@@ -530,20 +534,70 @@ process_poll() {
   local fetch_cmd
   fetch_cmd=$(poll_config_get_effective_fetch_command "$config_file")
   
-  # Execute fetch command
+  # Execute fetch command with error handling
   log "  Fetching items..."
   [[ "$VERBOSE" == "true" ]] && log "  Command: $fetch_cmd"
-  local items_json fetch_stderr fetch_exit
+  local items_json fetch_output fetch_stderr fetch_exit_code
   # Capture stdout and stderr separately - MCP servers may output to stderr
   fetch_stderr=$(mktemp)
-  items_json=$(bash -c "$fetch_cmd" 2>"$fetch_stderr")
-  fetch_exit=$?
-  if [[ $fetch_exit -ne 0 ]]; then
-    log_error "  Fetch command failed: $(cat "$fetch_stderr")"
+  fetch_output=$(bash -c "$fetch_cmd" 2>"$fetch_stderr") || fetch_exit_code=$?
+  fetch_exit_code=${fetch_exit_code:-0}
+  
+  # Handle fetch errors based on exit code from ocdc-mcp-fetch.js
+  # Exit codes: 0=success, 10=not configured, 11=connection failed, 12=tool not found, 13=tool failed
+  if [[ $fetch_exit_code -ne 0 ]]; then
+    local error_type="$ERR_NETWORK_TIMEOUT"  # Default
+    local error_msg
+    error_msg=$(cat "$fetch_stderr")
     rm -f "$fetch_stderr"
-    return 1
+    
+    case $fetch_exit_code in
+      10)
+        # MCP not configured - skip this source permanently
+        error_type="$ERR_AUTH_FAILED"
+        log_error "  MCP not configured for source type. Skipping."
+        return 1
+        ;;
+      11)
+        # Connection failed - could be rate limit or network issue
+        if echo "$error_msg" | grep -qi "rate.limit\|429\|too.many.requests"; then
+          error_type="$ERR_RATE_LIMITED"
+          log_warn "  Rate limited. Will retry next cycle."
+        else
+          error_type="$ERR_NETWORK_TIMEOUT"
+          log_warn "  Connection failed. Will retry next cycle."
+        fi
+        return 1
+        ;;
+      12)
+        # Tool not found - likely auth issue or misconfiguration
+        error_type="$ERR_AUTH_FAILED"
+        log_error "  MCP tool not found. Check configuration."
+        return 1
+        ;;
+      13)
+        # Tool execution failed
+        if echo "$error_msg" | grep -qi "rate.limit\|429\|too.many.requests"; then
+          error_type="$ERR_RATE_LIMITED"
+          log_warn "  Rate limited. Will retry next cycle."
+        elif echo "$error_msg" | grep -qi "unauthorized\|forbidden\|401\|403"; then
+          error_type="$ERR_AUTH_FAILED"
+          log_error "  Authentication failed. Check credentials."
+        else
+          error_type="$ERR_NETWORK_TIMEOUT"
+          log_warn "  Fetch failed. Will retry next cycle."
+        fi
+        return 1
+        ;;
+      *)
+        log_error "  Fetch command failed (exit $fetch_exit_code): $error_msg"
+        return 1
+        ;;
+    esac
   fi
   rm -f "$fetch_stderr"
+  
+  items_json="$fetch_output"
   
   # Check if we got valid JSON array
   local item_count
@@ -597,134 +651,267 @@ process_poll() {
   local repo_filters_json
   repo_filters_json=$(poll_config_get_repo_filters "$config_file")
   
-  # Process each item
-  echo "$items_json" | jq -c '.[]' | while read -r item; do
-    # Extract fields
-    local key repo repo_short number title body url branch
-    key=$(get_item_field "$item" "$key_expr")
-    repo=$(get_item_field "$item" "$repo_expr")
-    repo_short=$(get_item_field "$item" "$repo_short_expr")
-    number=$(get_item_field "$item" "$number_expr")
-    title=$(get_item_field "$item" "$title_expr")
-    body=$(get_item_field "$item" "$body_expr")
-    url=$(get_item_field "$item" "$url_expr")
-    branch=$(get_item_field "$item" "$branch_expr")
+  # Collect items that need processing
+  local items_to_process=()
+  
+  while IFS= read -r item; do
+    [[ -z "$item" ]] && continue
     
-    # Check if already processed
+    # Extract key for filtering
+    local key
+    key=$(get_item_field "$item" "$key_expr")
+    
+    # Check if item should be permanently skipped (non-retryable error)
+    if poll_error_should_skip "$key"; then
+      local error_info
+      error_info=$(poll_error_get_info "$key")
+      local error_type error_msg
+      error_type=$(echo "$error_info" | jq -r '.type // "unknown"')
+      error_msg=$(echo "$error_info" | jq -r '.message // ""')
+      [[ "$VERBOSE" == "true" ]] && log "  Skipping $key (permanent error: $error_type - $error_msg)"
+      continue
+    fi
+    
+    # Check if already processed successfully
     if is_processed "$key"; then
       [[ "$VERBOSE" == "true" ]] && log "  Skipping $key (already processed)"
       continue
     fi
     
-    log "  New item: $key"
-    log "    Repo: $repo"
-    log "    Branch: $branch"
-    log "    Title: $title"
-    
-    # Match item against repo filters to get repo_path
-    local repo_path
-    repo_path=$(poll_config_match_repo_filter "$item" "$repo_filters_json")
-    if [[ -z "$repo_path" ]]; then
-      log_warn "    No matching repo_filter for item, skipping"
-      [[ "$VERBOSE" == "true" ]] && log "    Item JSON: $item"
+    # Check if item is in error state but ready for retry
+    if poll_error_should_retry "$key"; then
+      local error_info
+      error_info=$(poll_error_get_info "$key")
+      local attempts
+      attempts=$(echo "$error_info" | jq -r '.attempts // 0')
+      log "  Retrying item: $key (attempt $((attempts + 1)))"
+      items_to_process+=("$item")
+    elif poll_error_is_errored "$key"; then
+      # In error state but not ready to retry yet
+      local error_info
+      error_info=$(poll_error_get_info "$key")
+      local next_retry
+      next_retry=$(echo "$error_info" | jq -r '.next_retry // ""')
+      [[ "$VERBOSE" == "true" ]] && log "  Skipping $key (retry scheduled for $next_retry)"
       continue
+    else
+      # New item
+      log "  New item: $key"
+      items_to_process+=("$item")
     fi
-    repo_path=$(expand_path "$repo_path")
+  done < <(echo "$items_json" | jq -c '.[]')
+  
+  local items_count=${#items_to_process[@]}
+  if [[ $items_count -eq 0 ]]; then
+    log "  No new items to process"
+    CURRENT_POLL_ID=""
+    return 0
+  fi
+  
+  log "  Processing $items_count item(s) (max concurrent: $MAX_CONCURRENT)"
+  
+  # Process items with parallelism
+  local job_pids=()
+  local active_jobs=0
+  
+  for item in "${items_to_process[@]}"; do
+    # Wait for a slot if we're at max concurrent
+    while [[ $active_jobs -ge $MAX_CONCURRENT ]]; do
+      # Wait for any job to complete
+      wait -n 2>/dev/null || true
+      # Recount active jobs
+      active_jobs=0
+      for pid in "${job_pids[@]}"; do
+        if kill -0 "$pid" 2>/dev/null; then
+          active_jobs=$((active_jobs + 1))
+        fi
+      done
+    done
     
-    if [[ "$DRY_RUN" == "true" ]]; then
-      log "    [DRY-RUN] Would create devcontainer and session"
-      continue
+    # Process item in background (or foreground if max_concurrent=1)
+    if [[ $MAX_CONCURRENT -eq 1 ]]; then
+      process_single_item "$item" "$config_id" "$source_type" \
+        "$key_expr" "$repo_expr" "$repo_short_expr" "$number_expr" \
+        "$title_expr" "$body_expr" "$url_expr" "$branch_expr" \
+        "$session_template" "$prompt_template" "$session_agent" \
+        "$repo_filters_json"
+    else
+      process_single_item "$item" "$config_id" "$source_type" \
+        "$key_expr" "$repo_expr" "$repo_short_expr" "$number_expr" \
+        "$title_expr" "$body_expr" "$url_expr" "$branch_expr" \
+        "$session_template" "$prompt_template" "$session_agent" \
+        "$repo_filters_json" &
+      job_pids+=($!)
+      active_jobs=$((active_jobs + 1))
     fi
-    
-    # Check repo path exists
-    if [[ ! -d "$repo_path" ]]; then
-      log_error "    Repo path does not exist: $repo_path"
-      continue
-    fi
-    
-    # Render templates
-    local session_name_raw session_name
-    session_name_raw=$(poll_config_render_template "$session_template" \
-      key="$key" \
-      repo="$repo" \
-      repo_short="$repo_short" \
-      number="$number" \
-      title="$title" \
-      branch="$branch")
-    # Sanitize session name to prevent command injection and path traversal
-    # Truncate to 200 chars to avoid tmux session name limits
-    session_name=$(sanitize_name "$session_name_raw" | cut -c1-200)
-    
-    if [[ -z "$session_name" ]]; then
-      log_error "    Session name is empty after sanitization"
-      continue
-    fi
-    
-    local prompt
-    prompt=$(poll_config_render_template "$prompt_template" \
-      key="$key" \
-      repo="$repo" \
-      repo_short="$repo_short" \
-      number="$number" \
-      title="$title" \
-      body="$body" \
-      url="$url" \
-      branch="$branch")
-    
-    # Create devcontainer clone
-    log "    Creating devcontainer clone..."
-    local clone_dir="${OCDC_CLONES_DIR}/${repo_short}/${branch}"
-    
-    if [[ ! -d "$clone_dir" ]]; then
-      if ! (cd "$repo_path" && ocdc up "$branch" --no-open 2>&1); then
-        log_error "    Failed to create devcontainer"
-        continue
-      fi
-    fi
-    
-    # Check if tmux session already exists
-    if tmux has-session -t "$session_name" 2>/dev/null; then
-      log_warn "    Session $session_name already exists"
-      mark_processed "$key" "$config_id"
-      continue
-    fi
-    
-    # Create tmux session with opencode
-    log "    Creating tmux session: $session_name"
-    
-    # Write prompt to temp file to avoid shell escaping issues
-    # Use sanitized session_name in filename to prevent path traversal
-    local prompt_file
-    prompt_file="${OCDC_POLL_STATE_DIR}/prompt-${session_name}.txt"
-    printf '%s' "$prompt" > "$prompt_file"
-    
-    # Build opencode command with agent flag (quote to prevent injection)
-    local opencode_cmd="opencode --agent \"$session_agent\""
-    
-    # Create tmux session running opencode with the prompt
-    # Set OCDC_* environment variables so the plugin knows the context
-    # The session runs in the clone directory
-    if ! tmux new-session -d -s "$session_name" -c "$clone_dir" \
-      -e "OCDC_WORKSPACE=$clone_dir" \
-      -e "OCDC_BRANCH=$branch" \
-      -e "OCDC_SOURCE_URL=$url" \
-      -e "OCDC_SOURCE_TYPE=$source_type" \
-      -e "OCDC_POLL_CONFIG=$config_id" \
-      -e "OCDC_ITEM_KEY=$key" \
-      "$opencode_cmd --prompt \"\$(cat '$prompt_file')\"; rm -f '$prompt_file'; echo 'Session complete. Press enter to close...'; read"; then
-      log_error "    Failed to create tmux session"
-      rm -f "$prompt_file"  # Cleanup prompt file on failure
-      continue
-    fi
-    
-    log_success "    Session $session_name created"
-    log "    Attach with: tmux attach -t $session_name"
-    mark_processed "$key" "$config_id"
   done
+  
+  # Wait for all remaining background jobs
+  if [[ $MAX_CONCURRENT -gt 1 ]] && [[ ${#job_pids[@]} -gt 0 ]]; then
+    wait "${job_pids[@]}" 2>/dev/null || true
+  fi
   
   # Clear poll ID after processing
   CURRENT_POLL_ID=""
   
+  return 0
+}
+
+# Process a single item - creates devcontainer and tmux session
+# This function is called either directly or in a background subshell
+process_single_item() {
+  local item="$1"
+  local config_id="$2"
+  local source_type="$3"
+  local key_expr="$4"
+  local repo_expr="$5"
+  local repo_short_expr="$6"
+  local number_expr="$7"
+  local title_expr="$8"
+  local body_expr="$9"
+  local url_expr="${10}"
+  local branch_expr="${11}"
+  local session_template="${12}"
+  local prompt_template="${13}"
+  local session_agent="${14}"
+  local repo_filters_json="${15}"
+  
+  # Extract fields
+  local key repo repo_short number title body url branch
+  key=$(get_item_field "$item" "$key_expr")
+  repo=$(get_item_field "$item" "$repo_expr")
+  repo_short=$(get_item_field "$item" "$repo_short_expr")
+  number=$(get_item_field "$item" "$number_expr")
+  title=$(get_item_field "$item" "$title_expr")
+  body=$(get_item_field "$item" "$body_expr")
+  url=$(get_item_field "$item" "$url_expr")
+  branch=$(get_item_field "$item" "$branch_expr")
+  
+  log "    [$key] Repo: $repo"
+  log "    [$key] Branch: $branch"
+  log "    [$key] Title: $title"
+  
+  # Match item against repo filters to get repo_path
+  local repo_path
+  repo_path=$(poll_config_match_repo_filter "$item" "$repo_filters_json")
+  if [[ -z "$repo_path" ]]; then
+    log_warn "    [$key] No matching repo_filter for item, skipping"
+    [[ "$VERBOSE" == "true" ]] && log "    [$key] Item JSON: $item"
+    return 1
+  fi
+  repo_path=$(expand_path "$repo_path")
+  
+  if [[ "$DRY_RUN" == "true" ]]; then
+    log "    [$key] [DRY-RUN] Would create devcontainer and session"
+    return 0
+  fi
+  
+  # Check repo path exists
+  if [[ ! -d "$repo_path" ]]; then
+    log_error "    [$key] Repo path does not exist: $repo_path"
+    poll_error_mark_item "$key" "$config_id" "$ERR_REPO_NOT_FOUND" "Repo path does not exist: $repo_path"
+    return 1
+  fi
+  
+  # Render templates
+  local session_name_raw session_name
+  session_name_raw=$(poll_config_render_template "$session_template" \
+    key="$key" \
+    repo="$repo" \
+    repo_short="$repo_short" \
+    number="$number" \
+    title="$title" \
+    branch="$branch")
+  # Sanitize session name to prevent command injection and path traversal
+  # Truncate to 200 chars to avoid tmux session name limits
+  session_name=$(sanitize_name "$session_name_raw" | cut -c1-200)
+  
+  if [[ -z "$session_name" ]]; then
+    log_error "    [$key] Session name is empty after sanitization"
+    return 1
+  fi
+  
+  local prompt
+  prompt=$(poll_config_render_template "$prompt_template" \
+    key="$key" \
+    repo="$repo" \
+    repo_short="$repo_short" \
+    number="$number" \
+    title="$title" \
+    body="$body" \
+    url="$url" \
+    branch="$branch")
+  
+  # Create devcontainer clone
+  log "    [$key] Creating devcontainer clone..."
+  local clone_dir="${OCDC_CLONES_DIR}/${repo_short}/${branch}"
+  
+  if [[ ! -d "$clone_dir" ]]; then
+    local clone_output clone_exit_code
+    clone_output=$(cd "$repo_path" && ocdc up "$branch" --no-open 2>&1) || clone_exit_code=$?
+    clone_exit_code=${clone_exit_code:-0}
+    
+    if [[ $clone_exit_code -ne 0 ]]; then
+      # Determine if it's a clone failure or devcontainer failure
+      local error_type="$ERR_CLONE_FAILED"
+      if echo "$clone_output" | grep -qi "devcontainer\|container\|docker"; then
+        error_type="$ERR_DEVCONTAINER_FAILED"
+      fi
+      
+      log_error "    [$key] Failed to create devcontainer: $clone_output"
+      poll_error_mark_item "$key" "$config_id" "$error_type" "$clone_output"
+      return 1
+    fi
+  fi
+  
+  # Check if tmux session already exists
+  if tmux has-session -t "$session_name" 2>/dev/null; then
+    log_warn "    [$key] Session $session_name already exists"
+    mark_processed "$key" "$config_id"
+    return 0
+  fi
+  
+  # Create tmux session with opencode
+  log "    [$key] Creating tmux session: $session_name"
+  
+  # Write prompt to temp file to avoid shell escaping issues
+  # Use sanitized session_name in filename to prevent path traversal
+  local prompt_file
+  prompt_file="${OCDC_POLL_STATE_DIR}/prompt-${session_name}.txt"
+  printf '%s' "$prompt" > "$prompt_file"
+  
+  # Build opencode command with agent flag (quote to prevent injection)
+  local opencode_cmd="opencode --agent \"$session_agent\""
+  
+  # Create tmux session running opencode with the prompt
+  # Set OCDC_* environment variables so the plugin knows the context
+  # The session runs in the clone directory
+  local tmux_output tmux_exit_code
+  tmux_output=$(tmux new-session -d -s "$session_name" -c "$clone_dir" \
+    -e "OCDC_WORKSPACE=$clone_dir" \
+    -e "OCDC_BRANCH=$branch" \
+    -e "OCDC_SOURCE_URL=$url" \
+    -e "OCDC_SOURCE_TYPE=$source_type" \
+    -e "OCDC_POLL_CONFIG=$config_id" \
+    -e "OCDC_ITEM_KEY=$key" \
+    "$opencode_cmd --prompt \"\$(cat '$prompt_file')\"; rm -f '$prompt_file'; echo 'Session complete. Press enter to close...'; read" 2>&1) || tmux_exit_code=$?
+  tmux_exit_code=${tmux_exit_code:-0}
+  
+  if [[ $tmux_exit_code -ne 0 ]]; then
+    log_error "    [$key] Failed to create tmux session: $tmux_output"
+    rm -f "$prompt_file"  # Cleanup prompt file on failure
+    poll_error_mark_item "$key" "$config_id" "$ERR_DEVCONTAINER_FAILED" "tmux session creation failed: $tmux_output"
+    return 1
+  fi
+  
+  # Clear any previous error state on success (check if this was a retry)
+  if poll_error_is_errored "$key"; then
+    poll_error_clear_item "$key"
+  fi
+  
+  log_success "    [$key] Session $session_name created"
+  log "    [$key] Attach with: tmux attach -t $session_name"
+  mark_processed "$key" "$config_id"
   return 0
 }
 
@@ -768,6 +955,14 @@ main() {
       --skip-cleanup)
         SKIP_CLEANUP=true
         shift
+        ;;
+      --max-concurrent)
+        if [[ -z "${2:-}" ]] || ! [[ "$2" =~ ^[0-9]+$ ]] || [[ "$2" -eq 0 ]]; then
+          log_error "--max-concurrent must be a positive integer"
+          exit 1
+        fi
+        MAX_CONCURRENT="$2"
+        shift 2
         ;;
       --help|-h)
         show_help
