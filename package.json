@@ -1,6 +1,6 @@
 {
   "name": "ocdc",
-  "version": "3.3.0",
+  "version": "3.4.0",
   "description": "Concurrent branch development with devcontainers using clone-based isolation",
   "type": "module",
   "main": "bin/ocdc",
