@@ -27,43 +27,7 @@ const execFileAsync = promisify(execFile)
 // Timeout for init operations (2 seconds)
 const INIT_TIMEOUT_MS = 2000
 
-// Track sessions that have been auto-initialized from environment
-const autoInitializedSessions = new Set()
-
 const __dirname = dirname(fileURLToPath(import.meta.url))
-
-// Auto-initialize session from OCDC_* environment variables (set by ocdc poll)
-function autoInitFromEnv(sessionID) {
-  // Only initialize once per session
-  if (autoInitializedSessions.has(sessionID)) return
-  autoInitializedSessions.add(sessionID)
-  
-  // Check if already has a session
-  if (loadSession(sessionID)) return
-  
-  // Check for OCDC_* environment variables
-  const workspace = process.env.OCDC_WORKSPACE
-  const branch = process.env.OCDC_BRANCH
-  
-  if (!workspace || !branch) return
-  if (!existsSync(workspace)) return
-  
-  // Extract repo name from workspace path
-  // Normalize path by removing trailing slash to ensure consistent extraction
-  const normalizedPath = workspace.replace(/\/+$/, "")
-  const parts = normalizedPath.split("/")
-  const repoName = parts[parts.length - 2] || "unknown"
-  
-  // Auto-save session context
-  saveSession(sessionID, {
-    workspace,
-    branch,
-    repoName,
-    sourceUrl: process.env.OCDC_SOURCE_URL,
-    sourceType: process.env.OCDC_SOURCE_TYPE,
-    autoInitialized: true,
-  })
-}
 
 // ============ Internal Functions ============
 
@@ -121,44 +85,6 @@ export const OCDC = async ({ client }) => {
   
   return {
     tool: {
-      // Set context for this session - used by poll orchestrator
-      ocdc_set_context: tool({
-        description: "Set the devcontainer/workspace context for this OpenCode session. Called by ocdc poll to configure sessions.",
-        args: {
-          workspace: tool.schema.string().describe("Absolute path to workspace/clone directory"),
-          branch: tool.schema.string().describe("Git branch name"),
-          source_url: tool.schema.string().optional().describe("PR or issue URL (GitHub/Linear)"),
-          source_type: tool.schema.string().optional().describe("Source type: github_pr, github_issue, linear_issue"),
-        },
-        async execute(args, ctx) {
-          const { sessionID } = ctx
-          const { workspace, branch, source_url, source_type } = args
-          
-          if (!existsSync(workspace)) {
-            return `Error: Workspace does not exist: ${workspace}`
-          }
-          
-          // Extract repo name from workspace path
-          const parts = workspace.split("/")
-          const repoName = parts[parts.length - 2] || "unknown"
-          
-          saveSession(sessionID, {
-            workspace,
-            branch,
-            repoName,
-            sourceUrl: source_url,
-            sourceType: source_type,
-          })
-          
-          return `Context set:\n` +
-                 `  Workspace: ${workspace}\n` +
-                 `  Branch: ${branch}\n` +
-                 `  Repo: ${repoName}\n` +
-                 (source_url ? `  Source: ${source_url}\n` : "") +
-                 `\nAll bash commands will now run inside this devcontainer.`
-        }
-      }),
-      
       // Execute command in devcontainer
       ocdc_exec: tool({
         description: "Execute a command in the current devcontainer context. Use this when you need to run commands inside the container.",
@@ -225,7 +151,6 @@ export const OCDC = async ({ client }) => {
             return `Current devcontainer: ${session.repoName}/${session.branch}\n` +
                    `Workspace: ${session.workspace}\n` +
                    `Status: ${running ? "Running" : "Not running"}\n` +
-                   (session.sourceUrl ? `Source: ${session.sourceUrl}\n` : "") +
                    `\nUse \`/ocdc off\` to disable.`
           }
           
@@ -349,9 +274,6 @@ export const OCDC = async ({ client }) => {
     "tool.execute.before": async (input, output) => {
       // Only intercept bash commands
       if (input.tool !== "bash") return
-      
-      // Auto-initialize from environment if needed (for ocdc poll sessions)
-      autoInitFromEnv(input.sessionID)
       
       const session = loadSession(input.sessionID)
       if (!session?.workspace) return

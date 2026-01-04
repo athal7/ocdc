@@ -1,31 +1,23 @@
 #!/usr/bin/env bash
 #
-# ocdc-clean - Clean up orphaned clones and sessions
+# ocdc-clean - Clean up orphaned clones
 #
 # Orphaned clones are directories in the clones folder that have no
 # associated tracked devcontainer instance in ports.json.
 #
-# Orphaned sessions are tmux sessions created by ocdc poll whose
-# workspace directory no longer exists.
-#
-# By default, cleans BOTH orphaned clones AND orphaned sessions.
 # Workspaces with uncommitted or unpushed changes are skipped (unless --force).
 #
 # Usage:
-#   ocdc clean              # Clean all orphans (clones + sessions)
+#   ocdc clean              # Clean orphaned clones
 #   ocdc clean --dry-run    # Show what would be removed
 #   ocdc clean --force      # Remove even if git dirty (DANGEROUS)
-#   ocdc clean --clones     # Only clean orphaned clones
-#   ocdc clean --sessions   # Only clean orphaned sessions
 #
 # Options:
 #   --dry-run, -n      Show what would be removed without removing
 #   --force, -f        Remove even if git dirty (use with caution!)
-#   --clones, -c       Only clean orphaned clone directories
-#   --sessions, -s     Only clean orphaned tmux sessions
 #
 # Related commands:
-#   ocdc list    - List instances, clones, and sessions
+#   ocdc list    - List instances and clones
 #   ocdc down    - Stop devcontainer
 #   ocdc tui     - Interactive TUI
 
@@ -34,7 +26,6 @@ set -euo pipefail
 # Source paths library
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/ocdc-paths.bash"
-source "${SCRIPT_DIR}/ocdc-sessions.bash"
 
 PORTS_FILE="$OCDC_PORTS_FILE"
 CLONES_DIR="$OCDC_CLONES_DIR"
@@ -42,8 +33,6 @@ CLONES_DIR="$OCDC_CLONES_DIR"
 # Parse arguments
 DRY_RUN=false
 FORCE=false
-CLEAN_CLONES=true
-CLEAN_SESSIONS=true
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -53,16 +42,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --force|-f)
       FORCE=true
-      shift
-      ;;
-    --clones|-c)
-      CLEAN_CLONES=true
-      CLEAN_SESSIONS=false
-      shift
-      ;;
-    --sessions|-s)
-      CLEAN_CLONES=false
-      CLEAN_SESSIONS=true
       shift
       ;;
     --help|-h)
@@ -140,30 +119,6 @@ find_orphaned_clones() {
   done
 }
 
-# Find orphaned sessions
-# Returns lines: "session_name|workspace|item_key|safe|reason"
-find_orphaned_sessions() {
-  while IFS= read -r session_name; do
-    [[ -z "$session_name" ]] && continue
-    
-    # Check if it's an OCDC session
-    local poll_config
-    poll_config=$(tmux show-environment -t "$session_name" 2>/dev/null | grep '^OCDC_POLL_CONFIG=' | cut -d= -f2- || true)
-    [[ -z "$poll_config" ]] && continue
-    
-    # Get workspace and item_key
-    local workspace item_key
-    workspace=$(tmux show-environment -t "$session_name" 2>/dev/null | grep '^OCDC_WORKSPACE=' | cut -d= -f2- || true)
-    item_key=$(tmux show-environment -t "$session_name" 2>/dev/null | grep '^OCDC_ITEM_KEY=' | cut -d= -f2- || true)
-    
-    # Check if orphaned (workspace doesn't exist)
-    if [[ -z "$workspace" ]] || [[ ! -d "$workspace" ]]; then
-      # Session is orphan - always safe to kill (workspace gone)
-      echo "${session_name}|${workspace}|${item_key}|true|"
-    fi
-  done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null)
-}
-
 # Remove a clone directory
 remove_clone() {
   local clone_dir="$1"
@@ -180,42 +135,18 @@ remove_clone() {
   fi
 }
 
-# Kill a session and clear state
-kill_session() {
-  local session_name="$1"
-  local item_key="$2"
-  
-  ocdc_kill_session "$session_name"
-  log "Killed session: $session_name (cleared from poll state)"
-}
-
 # Main
 main() {
   local orphaned_clones=""
-  local orphaned_sessions=""
   local clones_to_remove=""
   local clones_skipped=""
-  local sessions_to_kill=""
   
   # Find orphaned clones
-  if [[ "$CLEAN_CLONES" == "true" ]]; then
-    orphaned_clones=$(find_orphaned_clones)
-  fi
-  
-  # Find orphaned sessions
-  if [[ "$CLEAN_SESSIONS" == "true" ]]; then
-    orphaned_sessions=$(find_orphaned_sessions)
-  fi
+  orphaned_clones=$(find_orphaned_clones)
   
   # Check if anything to clean
-  if [[ -z "$orphaned_clones" ]] && [[ -z "$orphaned_sessions" ]]; then
-    if [[ "$CLEAN_CLONES" == "true" ]] && [[ "$CLEAN_SESSIONS" == "true" ]]; then
-      log "No orphaned clones or sessions found."
-    elif [[ "$CLEAN_CLONES" == "true" ]]; then
-      log "No orphaned clones found."
-    else
-      log "No orphaned sessions found."
-    fi
+  if [[ -z "$orphaned_clones" ]]; then
+    log "No orphaned clones found."
     exit 0
   fi
   
@@ -224,30 +155,18 @@ main() {
   local clone_safe_count=0
   local clone_skip_count=0
   
-  if [[ -n "$orphaned_clones" ]]; then
-    while IFS='|' read -r clone_dir repo branch safe reason; do
-      [[ -z "$clone_dir" ]] && continue
-      ((clone_count++)) || true
-      
-      if [[ "$safe" == "true" ]]; then
-        clones_to_remove="${clones_to_remove}${clone_dir}|${repo}|${branch}\n"
-        ((clone_safe_count++)) || true
-      else
-        clones_skipped="${clones_skipped}${clone_dir}|${repo}|${branch}|${reason}\n"
-        ((clone_skip_count++)) || true
-      fi
-    done <<< "$orphaned_clones"
-  fi
-  
-  # Count sessions (all orphaned sessions are safe to kill)
-  local session_count=0
-  if [[ -n "$orphaned_sessions" ]]; then
-    while IFS='|' read -r session_name workspace item_key safe reason; do
-      [[ -z "$session_name" ]] && continue
-      sessions_to_kill="${sessions_to_kill}${session_name}|${workspace}|${item_key}\n"
-      ((session_count++)) || true
-    done <<< "$orphaned_sessions"
-  fi
+  while IFS='|' read -r clone_dir repo branch safe reason; do
+    [[ -z "$clone_dir" ]] && continue
+    ((clone_count++)) || true
+    
+    if [[ "$safe" == "true" ]]; then
+      clones_to_remove="${clones_to_remove}${clone_dir}|${repo}|${branch}\n"
+      ((clone_safe_count++)) || true
+    else
+      clones_skipped="${clones_skipped}${clone_dir}|${repo}|${branch}|${reason}\n"
+      ((clone_skip_count++)) || true
+    fi
+  done <<< "$orphaned_clones"
   
   # Dry run output
   if [[ "$DRY_RUN" == "true" ]]; then
@@ -268,22 +187,13 @@ main() {
       done
     fi
     
-    if [[ $session_count -gt 0 ]]; then
-      log "Would kill $session_count orphaned session(s):"
-      echo -e "$sessions_to_kill" | while IFS='|' read -r session_name workspace item_key; do
-        [[ -z "$session_name" ]] && continue
-        echo "  - $session_name"
-      done
-    fi
-    
     exit 0
   fi
   
   # Perform cleanup
-  log "Cleaning orphaned resources..."
+  log "Cleaning orphaned clones..."
   
   local removed_clones=0
-  local killed_sessions=0
   
   # Remove safe clones
   if [[ -n "$clones_to_remove" ]]; then
@@ -292,15 +202,6 @@ main() {
       remove_clone "$clone_dir" "$repo" "$branch"
     done
     removed_clones=$clone_safe_count
-  fi
-  
-  # Kill sessions
-  if [[ -n "$sessions_to_kill" ]]; then
-    echo -e "$sessions_to_kill" | while IFS='|' read -r session_name workspace item_key; do
-      [[ -z "$session_name" ]] && continue
-      kill_session "$session_name" "$item_key"
-    done
-    killed_sessions=$session_count
   fi
   
   # Report skipped
@@ -317,15 +218,8 @@ main() {
   
   # Summary
   log ""
-  local summary=""
-  [[ $removed_clones -gt 0 ]] && summary="${summary}${removed_clones} clone(s)"
-  [[ $killed_sessions -gt 0 ]] && {
-    [[ -n "$summary" ]] && summary="${summary}, "
-    summary="${summary}${killed_sessions} session(s)"
-  }
-  
-  if [[ -n "$summary" ]]; then
-    log "Cleaned: $summary"
+  if [[ $removed_clones -gt 0 ]]; then
+    log "Cleaned: ${removed_clones} clone(s)"
   fi
   
   log "Done."

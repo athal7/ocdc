@@ -92,8 +92,16 @@ Ports are tracked in `~/.cache/ocdc/ports.json`:
 
 ```json
 {
-  "/Users/me/.cache/devcontainer-clones/myapp/main": 13000,
-  "/Users/me/.cache/devcontainer-clones/myapp/feature-x": 13001
+  "/Users/me/.cache/devcontainer-clones/myapp/main": {
+    "port": 13000,
+    "repo": "myapp",
+    "branch": "main"
+  },
+  "/Users/me/.cache/devcontainer-clones/myapp/feature-x": {
+    "port": 13001,
+    "repo": "myapp",
+    "branch": "feature-x"
+  }
 }
 ```
 

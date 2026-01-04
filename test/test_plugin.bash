@@ -568,14 +568,6 @@ test_plugin_defines_ocdc_tool() {
   return 0
 }
 
-test_plugin_defines_ocdc_set_context_tool() {
-  grep -q "ocdc_set_context: tool(" "$PLUGIN_DIR/index.js" || {
-    echo "ocdc_set_context tool not defined"
-    return 1
-  }
-  return 0
-}
-
 test_plugin_defines_ocdc_exec_tool() {
   grep -q "ocdc_exec: tool(" "$PLUGIN_DIR/index.js" || {
     echo "ocdc_exec tool not defined"
@@ -637,14 +629,6 @@ test_plugin_ocdc_tool_checks_cli_installed() {
 test_plugin_ocdc_tool_handles_off() {
   grep -q 'target === "off"' "$PLUGIN_DIR/index.js" || {
     echo "ocdc tool should handle 'off' target"
-    return 1
-  }
-  return 0
-}
-
-test_plugin_set_context_validates_workspace() {
-  grep -q 'existsSync(workspace)' "$PLUGIN_DIR/index.js" || {
-    echo "ocdc_set_context should validate workspace exists"
     return 1
   }
   return 0
@@ -1247,12 +1231,12 @@ test_plugin_handles_abort_error() {
 }
 
 test_plugin_async_execute_functions() {
-  # All three tools should have async execute functions
+  # Both tools should have async execute functions
   local async_count
   async_count=$(grep -c "async execute(args, ctx)" "$PLUGIN_DIR/index.js" 2>/dev/null || echo "0")
   
-  if [[ "$async_count" -ne 3 ]]; then
-    echo "Expected 3 async execute functions (ocdc_set_context, ocdc_exec, ocdc), found: $async_count"
+  if [[ "$async_count" -ne 2 ]]; then
+    echo "Expected 2 async execute functions (ocdc_exec, ocdc), found: $async_count"
     return 1
   fi
   return 0
@@ -1562,34 +1546,6 @@ test_opencode_ocdc_tool_responds() {
   return 0
 }
 
-test_opencode_ocdc_set_context_rejects_invalid() {
-  if ! can_run_integration_tests; then
-    echo "SKIP: opencode not installed or plugin not configured"
-    return 0
-  fi
-  
-  setup_integration_env
-  
-  # Try to set context with non-existent workspace
-  local output
-  output=$(run_opencode "Use the ocdc_set_context tool with workspace='/nonexistent/path/12345' and branch='test'." 120) || {
-    cleanup_integration_env
-    echo "opencode run failed: $output"
-    return 1
-  }
-  
-  cleanup_integration_env
-  
-  # Should report error about workspace not existing
-  if ! echo "$output" | grep -qiE "(error|not exist|invalid|cannot find)"; then
-    echo "ocdc_set_context should reject invalid workspace"
-    echo "Output: $output"
-    return 1
-  fi
-  
-  return 0
-}
-
 test_opencode_ocdc_attempts_to_create_workspace() {
   if ! can_run_integration_tests; then
     echo "SKIP: opencode not installed or plugin not configured"
@@ -1811,7 +1767,6 @@ echo "Plugin Structure Tests (index.js):"
 
 for test_func in \
   test_plugin_defines_ocdc_tool \
-  test_plugin_defines_ocdc_set_context_tool \
   test_plugin_defines_ocdc_exec_tool \
   test_plugin_defines_tool_execute_before_hook \
   test_plugin_hook_checks_bash_tool \
@@ -1820,7 +1775,6 @@ for test_func in \
   test_plugin_hook_wraps_with_ocdc_exec \
   test_plugin_ocdc_tool_checks_cli_installed \
   test_plugin_ocdc_tool_handles_off \
-  test_plugin_set_context_validates_workspace \
   test_plugin_ocdc_tool_does_not_show_verbose_up_output
 do
   setup
@@ -1891,7 +1845,6 @@ for test_func in \
   test_opencode_starts_within_timeout \
   test_opencode_plugin_loads \
   test_opencode_ocdc_tool_responds \
-  test_opencode_ocdc_set_context_rejects_invalid \
   test_opencode_ocdc_attempts_to_create_workspace \
   test_opencode_ocdc_off_without_session \
   test_opencode_ocdc_exec_requires_context \

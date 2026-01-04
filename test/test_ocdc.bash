@@ -172,6 +172,31 @@ test_ocdc_unknown_command() {
   assert_contains "$output" "Unknown command" || assert_contains "$output" "unknown"
 }
 
+test_ocdc_poll_removed() {
+  # Poll command should be removed (moved to opencode-pilot)
+  local output
+  if output=$("$BIN_DIR/ocdc" poll 2>&1); then
+    echo "Poll command should be removed (exit 0 unexpectedly)"
+    return 1
+  fi
+  # Should show unknown command error, not poll help
+  if [[ "$output" == *"Poll configured sources"* ]]; then
+    echo "Poll command should be removed, but it's still present"
+    return 1
+  fi
+  assert_contains "$output" "Unknown command" || assert_contains "$output" "unknown"
+}
+
+test_ocdc_help_excludes_poll() {
+  # Help should not mention poll command
+  local output=$("$BIN_DIR/ocdc" help 2>&1)
+  if [[ "$output" == *"poll"* ]]; then
+    echo "Help should not mention poll command (moved to opencode-pilot)"
+    return 1
+  fi
+  return 0
+}
+
 # =============================================================================
 # Run Tests
 # =============================================================================
@@ -192,7 +217,9 @@ for test_func in \
   test_ocdc_exec_dispatches \
   test_ocdc_list_dispatches \
   test_ocdc_go_dispatches \
-  test_ocdc_unknown_command
+  test_ocdc_unknown_command \
+  test_ocdc_poll_removed \
+  test_ocdc_help_excludes_poll
 do
   setup
   run_test "${test_func#test_}" "$test_func"

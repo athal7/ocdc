@@ -2,45 +2,53 @@
 #
 # ocdc-file-lock.bash - Cross-platform file locking using mkdir
 #
-# Uses mkdir-based locking which is atomic and portable across
-# macOS and Linux (flock is not available on macOS by default).
+# This uses mkdir for atomic lock acquisition, which works on both macOS and Linux.
+# flock is not available on macOS by default.
 #
+# Usage:
+#   source "$(dirname "$0")/../lib/ocdc-file-lock.bash"
+#   lock_file "/path/to/lockfile"
+#   # ... critical section ...
+#   unlock_file "/path/to/lockfile"
 
-# Acquire a lock using mkdir (atomic operation)
-# Spins until lock is acquired, with stale lock detection
-# Args:
-#   $1 - lock directory path
-#   $2 - max age in seconds before lock is considered stale (default: 60)
+# Acquire a lock (blocking with polling)
+# Usage: lock_file <lockfile> [max_age_seconds]
+# max_age_seconds: Remove stale locks older than this (default: 60)
 lock_file() {
-  local lockdir="$1"
+  local lockfile="$1"
   local max_age="${2:-60}"
   
-  while ! mkdir "$lockdir" 2>/dev/null; do
-    # Check if something exists at lock path (could be file or directory)
-    if [[ -e "$lockdir" ]]; then
-      local lock_mtime now lock_age
-      # Cross-platform mtime: Linux uses -c %Y, macOS uses -f %m
-      lock_mtime=$(stat -c %Y "$lockdir" 2>/dev/null) || lock_mtime=$(stat -f %m "$lockdir" 2>/dev/null) || lock_mtime=0
+  while true; do
+    # Try to create lock directory atomically
+    if mkdir "$lockfile" 2>/dev/null; then
+      return 0
+    fi
+    
+    # Lock exists - check if it's stale
+    if [[ -e "$lockfile" ]]; then
+      local now lock_mtime age
       now=$(date +%s)
-      lock_age=$((now - lock_mtime))
       
-      if [[ $lock_age -gt $max_age ]]; then
-        # Lock is stale - remove it (handles both files and directories)
-        if [[ -d "$lockdir" ]]; then
-          rmdir "$lockdir" 2>/dev/null || true
-        else
-          rm -f "$lockdir" 2>/dev/null || true
-        fi
+      # Get mtime - handle both files and directories
+      # macOS: stat -f%m, Linux: stat -c%Y
+      lock_mtime=$(stat -f%m "$lockfile" 2>/dev/null || stat -c%Y "$lockfile" 2>/dev/null || echo 0)
+      age=$((now - lock_mtime))
+      
+      if [[ $age -gt $max_age ]]; then
+        # Stale lock - remove it (handles both files and directories)
+        rm -rf "$lockfile" 2>/dev/null || true
         continue
       fi
     fi
+    
+    # Wait and retry
     sleep 0.1
   done
 }
 
-# Release a lock by removing the directory
-# Succeeds even if lock doesn't exist
+# Release a lock
+# Usage: unlock_file <lockfile>
 unlock_file() {
-  local lockdir="$1"
-  rmdir "$lockdir" 2>/dev/null || true
+  local lockfile="$1"
+  rmdir "$lockfile" 2>/dev/null || rm -f "$lockfile" 2>/dev/null || true
 }

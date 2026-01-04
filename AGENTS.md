@@ -7,7 +7,6 @@ Before committing changes, verify documentation is updated to reflect code chang
 1. **README.md** - Update if changes affect:
    - CLI commands or flags (`ocdc <command>`)
    - Configuration options (`~/.config/ocdc/config.json`)
-   - Poll config schema or options (`~/.config/ocdc/polls/*.yaml`)
    - Installation steps or dependencies
    - Usage examples
 
@@ -20,13 +19,6 @@ Before committing changes, verify documentation is updated to reflect code chang
    - Workflow or best practices
    - New commands or features
    - OpenCode integration
-
-4. **share/ocdc/examples/** - Update if changes affect:
-   - Poll config schema (update example configs)
-   - New source types or options
-
-5. **share/ocdc/poll-config.schema.json** - Update if changes affect:
-   - Poll config structure or validation
 
 ## Post-PR: Release and Upgrade Workflow
 
@@ -65,41 +57,20 @@ Compare version with the release. If not updated yet, wait and retry.
 brew upgrade athal7/tap/ocdc
 ```
 
-### 5. Restart Service
-
-Always restart the polling service after upgrade:
-
-```bash
-brew services restart ocdc
-```
-
-### 6. Verify Upgrade
+### 5. Verify Upgrade
 
 ```bash
 ocdc version
 ```
 
-### 7. Validate Configs
+### 6. Config Migration (if needed)
 
-Test that existing poll configs still work with the new version:
+Config file locations:
+- Main config: `~/.config/ocdc/config.json`
+- Cache/state: `~/.cache/ocdc/`
 
-```bash
-ocdc poll --dry-run
-```
-
-If validation fails, check release notes for breaking changes:
+If config format changed, check release notes for breaking changes:
 
 ```bash
 gh release view -R athal7/ocdc
 ```
-
-### 8. Config Migration (if needed)
-
-Config file locations:
-- Main config: `~/.config/ocdc/config.json`
-- Poll configs: `~/.config/ocdc/polls/*.yaml`
-- Cache/state: `~/.cache/ocdc/`
-
-If schema changed, update configs to match new format. Refer to:
-- `share/ocdc/poll-config.schema.json` for poll config schema
-- `share/ocdc/examples/` for example configs

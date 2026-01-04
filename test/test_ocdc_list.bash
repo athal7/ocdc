@@ -36,7 +36,6 @@ test_ocdc_list_shows_help() {
 
 test_ocdc_list_shows_empty_message() {
   echo '{}' > "$TEST_CACHE_DIR/ports.json"
-  # Use --active to avoid picking up real sessions from the system
   local output=$("$BIN_DIR/ocdc" list --active 2>&1)
   assert_contains "$output" "No devcontainer instances"
 }
@@ -85,92 +84,6 @@ EOF
 }
 
 # =============================================================================
-# Session Tests
-# =============================================================================
-
-# Helper to create mock tmux session
-create_test_session() {
-  local session_name="$1"
-  local workspace="${2:-/tmp/test-workspace}"
-  local poll_config="${3:-test-poll}"
-  local item_key="${4:-test-item-key}"
-  
-  tmux new-session -d -s "$session_name" \
-    -e "OCDC_WORKSPACE=$workspace" \
-    -e "OCDC_POLL_CONFIG=$poll_config" \
-    -e "OCDC_ITEM_KEY=$item_key" \
-    -e "OCDC_BRANCH=test-branch" \
-    "sleep 3600" 2>/dev/null || true
-}
-
-cleanup_test_sessions() {
-  for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^test-ocdc-' || true); do
-    tmux kill-session -t "$session" 2>/dev/null || true
-  done
-}
-
-test_ocdc_list_shows_sessions() {
-  cleanup_test_sessions
-  
-  # Create a workspace for the session
-  local workspace="$TEST_CLONES_DIR/my-repo/session-branch"
-  mkdir -p "$workspace"
-  
-  # Create a session
-  create_test_session "test-ocdc-list-sess" "$workspace" "test-poll" "test-key"
-  
-  echo '{}' > "$TEST_CACHE_DIR/ports.json"
-  
-  local output=$("$BIN_DIR/ocdc" list 2>&1)
-  
-  # Should show SESSION status
-  assert_contains "$output" "SESSION"
-  assert_contains "$output" "test-ocdc-list-sess"
-  
-  cleanup_test_sessions
-}
-
-test_ocdc_list_shows_orphaned_session() {
-  cleanup_test_sessions
-  
-  # Create a session with non-existent workspace
-  create_test_session "test-ocdc-orphan-list" "/nonexistent/workspace" "test-poll" "test-key"
-  
-  echo '{}' > "$TEST_CACHE_DIR/ports.json"
-  
-  local output=$("$BIN_DIR/ocdc" list 2>&1)
-  
-  # Should show as orphan session
-  assert_contains "$output" "test-ocdc-orphan-list"
-  
-  cleanup_test_sessions
-}
-
-test_ocdc_list_json_includes_sessions() {
-  cleanup_test_sessions
-  
-  # Create a workspace for the session
-  local workspace="$TEST_CLONES_DIR/my-repo/json-branch"
-  mkdir -p "$workspace"
-  
-  create_test_session "test-ocdc-json-sess" "$workspace" "test-poll" "test-key"
-  
-  echo '{}' > "$TEST_CACHE_DIR/ports.json"
-  
-  local output=$("$BIN_DIR/ocdc" list --json 2>&1)
-  
-  # Should be valid JSON with session
-  if ! echo "$output" | jq -e '.[] | select(.type == "session")' >/dev/null 2>&1; then
-    cleanup_test_sessions
-    echo "JSON output should include session type"
-    echo "Got: $output"
-    return 1
-  fi
-  
-  cleanup_test_sessions
-}
-
-# =============================================================================
 # Run Tests
 # =============================================================================
 
@@ -181,19 +94,6 @@ for test_func in \
   test_ocdc_list_shows_empty_message \
   test_ocdc_list_shows_registered_instance \
   test_ocdc_list_shows_multiple_instances
-do
-  setup
-  run_test "${test_func#test_}" "$test_func"
-  teardown
-done
-
-echo ""
-echo "Session Tests:"
-
-for test_func in \
-  test_ocdc_list_shows_sessions \
-  test_ocdc_list_shows_orphaned_session \
-  test_ocdc_list_json_includes_sessions
 do
   setup
   run_test "${test_func#test_}" "$test_func"

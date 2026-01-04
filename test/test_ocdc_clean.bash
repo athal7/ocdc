@@ -37,8 +37,7 @@ test_ocdc_clean_shows_help() {
 
 test_ocdc_clean_handles_no_orphans() {
   # Empty clones dir, should report nothing to clean
-  # Use --clones to avoid picking up real sessions from the system
-  local output=$("$BIN_DIR/ocdc" clean --clones 2>&1)
+  local output=$("$BIN_DIR/ocdc" clean 2>&1)
   assert_contains "$output" "No orphaned clones"
 }
 
@@ -230,153 +229,6 @@ test_ocdc_clean_force_removes_dirty() {
 }
 
 # =============================================================================
-# Session Cleanup Tests
-# =============================================================================
-
-# Helper to create mock tmux session
-create_test_session() {
-  local session_name="$1"
-  local workspace="${2:-/tmp/test-workspace}"
-  local poll_config="${3:-test-poll}"
-  local item_key="${4:-test-item-key}"
-  
-  tmux new-session -d -s "$session_name" \
-    -e "OCDC_WORKSPACE=$workspace" \
-    -e "OCDC_POLL_CONFIG=$poll_config" \
-    -e "OCDC_ITEM_KEY=$item_key" \
-    -e "OCDC_BRANCH=test-branch" \
-    "sleep 3600" 2>/dev/null || true
-}
-
-cleanup_test_sessions() {
-  for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^test-ocdc-' || true); do
-    tmux kill-session -t "$session" 2>/dev/null || true
-  done
-}
-
-test_ocdc_clean_kills_orphaned_session() {
-  # Create an orphaned session (workspace doesn't exist)
-  create_test_session "test-ocdc-orphan-sess" "/nonexistent/workspace" "test-poll" "test-key"
-  
-  # Verify session exists
-  if ! tmux has-session -t "test-ocdc-orphan-sess" 2>/dev/null; then
-    echo "Setup failed: session not created"
-    return 1
-  fi
-  
-  echo '{}' > "$TEST_CACHE_DIR/ports.json"
-  
-  # Set up poll state dir
-  export OCDC_POLL_STATE_DIR="$TEST_DATA_DIR/poll-state"
-  mkdir -p "$OCDC_POLL_STATE_DIR"
-  echo '{"test-key": {"config": "test", "processed_at": "2024-01-01"}}' > "$OCDC_POLL_STATE_DIR/processed.json"
-  
-  # Run clean
-  local output=$("$BIN_DIR/ocdc" clean 2>&1)
-  assert_contains "$output" "Killed session"
-  
-  # Verify session was killed
-  if tmux has-session -t "test-ocdc-orphan-sess" 2>/dev/null; then
-    cleanup_test_sessions
-    echo "Orphaned session should have been killed"
-    return 1
-  fi
-  
-  # Verify processed state was cleared
-  local remaining
-  remaining=$(jq -r '.["test-key"] // "null"' "$OCDC_POLL_STATE_DIR/processed.json")
-  if [[ "$remaining" != "null" ]]; then
-    echo "Processed state should have been cleared"
-    return 1
-  fi
-  
-  cleanup_test_sessions
-  return 0
-}
-
-test_ocdc_clean_preserves_session_with_workspace() {
-  # Create a session with existing workspace
-  local workspace="$TEST_CLONES_DIR/my-repo/session-branch"
-  mkdir -p "$workspace"
-  
-  create_test_session "test-ocdc-valid-sess" "$workspace" "test-poll" "test-key"
-  
-  echo '{}' > "$TEST_CACHE_DIR/ports.json"
-  
-  # Run clean
-  "$BIN_DIR/ocdc" clean 2>&1
-  
-  # Verify session still exists (workspace exists, so not orphaned)
-  if ! tmux has-session -t "test-ocdc-valid-sess" 2>/dev/null; then
-    echo "Session with valid workspace should be preserved"
-    return 1
-  fi
-  
-  cleanup_test_sessions
-  return 0
-}
-
-test_ocdc_clean_sessions_flag_only_sessions() {
-  # Create an orphaned clone
-  mkdir -p "$TEST_CLONES_DIR/my-repo/orphan-branch"
-  
-  # Create an orphaned session
-  create_test_session "test-ocdc-sess-only" "/nonexistent/workspace" "test-poll" "test-key"
-  
-  echo '{}' > "$TEST_CACHE_DIR/ports.json"
-  
-  # Run clean --sessions (should only clean sessions, not clones)
-  local output=$("$BIN_DIR/ocdc" clean --sessions 2>&1)
-  
-  # Session should be killed
-  if tmux has-session -t "test-ocdc-sess-only" 2>/dev/null; then
-    cleanup_test_sessions
-    echo "Session should have been killed"
-    return 1
-  fi
-  
-  # Clone should be preserved
-  if [[ ! -d "$TEST_CLONES_DIR/my-repo/orphan-branch" ]]; then
-    cleanup_test_sessions
-    echo "Clone should have been preserved with --sessions flag"
-    return 1
-  fi
-  
-  cleanup_test_sessions
-  return 0
-}
-
-test_ocdc_clean_clones_flag_only_clones() {
-  # Create an orphaned clone
-  mkdir -p "$TEST_CLONES_DIR/my-repo/clone-only"
-  
-  # Create an orphaned session
-  create_test_session "test-ocdc-clone-flag" "/nonexistent/workspace" "test-poll" "test-key"
-  
-  echo '{}' > "$TEST_CACHE_DIR/ports.json"
-  
-  # Run clean --clones (should only clean clones, not sessions)
-  local output=$("$BIN_DIR/ocdc" clean --clones 2>&1)
-  
-  # Clone should be removed
-  if [[ -d "$TEST_CLONES_DIR/my-repo/clone-only" ]]; then
-    cleanup_test_sessions
-    echo "Clone should have been removed"
-    return 1
-  fi
-  
-  # Session should be preserved
-  if ! tmux has-session -t "test-ocdc-clone-flag" 2>/dev/null; then
-    cleanup_test_sessions
-    echo "Session should have been preserved with --clones flag"
-    return 1
-  fi
-  
-  cleanup_test_sessions
-  return 0
-}
-
-# =============================================================================
 # Run Tests
 # =============================================================================
 
@@ -403,20 +255,6 @@ for test_func in \
   test_ocdc_clean_skips_dirty_workspace \
   test_ocdc_clean_skips_unpushed_workspace \
   test_ocdc_clean_force_removes_dirty
-do
-  setup
-  run_test "${test_func#test_}" "$test_func"
-  teardown
-done
-
-echo ""
-echo "Session Cleanup Tests:"
-
-for test_func in \
-  test_ocdc_clean_kills_orphaned_session \
-  test_ocdc_clean_preserves_session_with_workspace \
-  test_ocdc_clean_sessions_flag_only_sessions \
-  test_ocdc_clean_clones_flag_only_clones
 do
   setup
   run_test "${test_func#test_}" "$test_func"

@@ -18,14 +18,13 @@
 #   ocdc up     - Start devcontainer
 #   ocdc down   - Stop devcontainer  
 #   ocdc list   - List instances (non-interactive)
-#   ocdc clean  - Clean up orphaned clones and sessions
+#   ocdc clean  - Clean up orphaned clones
 
 set -euo pipefail
 
 # Source paths library
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/ocdc-paths.bash"
-source "${SCRIPT_DIR}/ocdc-sessions.bash"
 
 CACHE_DIR="$OCDC_CACHE_DIR"
 PORTS_FILE="$OCDC_PORTS_FILE"
@@ -124,17 +123,7 @@ get_tracked_workspaces() {
   fi
 }
 
-# Get workspaces that have active sessions
-get_session_workspaces() {
-  local session_name poll_config workspace
-  while IFS= read -r session_name; do
-    [[ -z "$session_name" ]] && continue
-    poll_config=$(tmux show-environment -t "$session_name" 2>/dev/null | grep '^OCDC_POLL_CONFIG=' | cut -d= -f2- || true)
-    [[ -z "$poll_config" ]] && continue
-    workspace=$(tmux show-environment -t "$session_name" 2>/dev/null | grep '^OCDC_WORKSPACE=' | cut -d= -f2- || true)
-    [[ -n "$workspace" ]] && echo "$workspace"
-  done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null)
-}
+
 
 # Format git status for display
 format_git_status() {
@@ -169,20 +158,18 @@ format_git_status() {
   fi
 }
 
-# Load all instances (tracked containers + sessions + orphaned clones)
+# Load all instances (tracked containers + orphaned clones)
 load_instances() {
-  TYPES=()        # "container", "session", or "orphan"
+  TYPES=()        # "container" or "orphan"
   PORTS=()
   REPOS=()
   BRANCHES=()
   STATUSES=()
   WORKSPACES=()
   GIT_STATUSES=()
-  SESSIONS=()     # tmux session name (empty for non-sessions)
   
-  local tracked session_ws
+  local tracked
   tracked=$(get_tracked_workspaces)
-  session_ws=$(get_session_workspaces)
   
   # Load tracked containers from ports.json
   if [[ -f "$PORTS_FILE" ]]; then
@@ -194,7 +181,6 @@ load_instances() {
       REPOS+=("$repo")
       BRANCHES+=("$branch")
       WORKSPACES+=("$workspace")
-      SESSIONS+=("")
       GIT_STATUSES+=("$(format_git_status "$workspace")")
       if is_port_active "$port"; then
         STATUSES+=("UP")
@@ -204,44 +190,7 @@ load_instances() {
     done < <(jq -r 'to_entries[] | "\(.value.port)\t\(.value.repo)\t\(.value.branch)\t\(.key)"' "$PORTS_FILE" 2>/dev/null)
   fi
   
-  # Load tmux sessions (that aren't tracked as containers)
-  local session_name poll_config workspace branch repo
-  while IFS= read -r session_name; do
-    [[ -z "$session_name" ]] && continue
-    
-    poll_config=$(tmux show-environment -t "$session_name" 2>/dev/null | grep '^OCDC_POLL_CONFIG=' | cut -d= -f2- || true)
-    [[ -z "$poll_config" ]] && continue
-    
-    workspace=$(tmux show-environment -t "$session_name" 2>/dev/null | grep '^OCDC_WORKSPACE=' | cut -d= -f2- || true)
-    branch=$(tmux show-environment -t "$session_name" 2>/dev/null | grep '^OCDC_BRANCH=' | cut -d= -f2- || true)
-    
-    # Skip if this workspace is already tracked as a container
-    if echo "$tracked" | grep -qFx "$workspace" 2>/dev/null; then
-      continue
-    fi
-    
-    repo=""
-    if [[ -n "$workspace" ]]; then
-      repo=$(basename "$(dirname "$workspace")")
-    fi
-    
-    TYPES+=("session")
-    PORTS+=("-")
-    REPOS+=("$repo")
-    BRANCHES+=("$branch")
-    WORKSPACES+=("$workspace")
-    SESSIONS+=("$session_name")
-    
-    if [[ ! -d "$workspace" ]]; then
-      STATUSES+=("ORPHAN")
-      GIT_STATUSES+=("-")
-    else
-      STATUSES+=("SESSION")
-      GIT_STATUSES+=("$(format_git_status "$workspace")")
-    fi
-  done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null)
-  
-  # Load orphaned clones (exist on disk but not tracked and no session)
+  # Load orphaned clones (exist on disk but not tracked)
   if [[ -d "$CLONES_DIR" ]]; then
     local repo_dir repo_name clone_dir branch_name
     for repo_dir in "$CLONES_DIR"/*/; do
@@ -257,11 +206,6 @@ load_instances() {
           continue
         fi
         
-        # Skip if has a session
-        if echo "$session_ws" | grep -qFx "$clone_dir" 2>/dev/null; then
-          continue
-        fi
-        
         branch_name=$(basename "$clone_dir")
         TYPES+=("orphan")
         PORTS+=("-")
@@ -270,7 +214,6 @@ load_instances() {
         STATUSES+=("ORPHAN")
         WORKSPACES+=("$clone_dir")
         GIT_STATUSES+=("$(format_git_status "$clone_dir")")
-        SESSIONS+=("")
       done
     done
   fi
@@ -328,7 +271,7 @@ draw_screen() {
   echo ""
   
   if [[ ${#TYPES[@]} -eq 0 ]]; then
-    echo "${pad}No devcontainer instances, clones, or sessions found."
+    echo "${pad}No devcontainer instances or clones found."
     echo ""
     echo -e "${pad}${DIM}Press${RESET} ${BOLD}n${RESET} ${DIM}to create a new devcontainer${RESET}"
   else
@@ -354,7 +297,6 @@ draw_screen() {
       case "${STATUSES[$i]}" in
         UP)      status_color="${GREEN}" ;;
         DOWN)    status_color="${RED}" ;;
-        SESSION) status_color="${BLUE}" ;;
         ORPHAN)  status_color="${YELLOW}" ;;
       esac
       
@@ -378,12 +320,8 @@ draw_screen() {
         "${PORTS[$i]}" "$repo" "$branch" "${STATUSES[$i]}" "$git_val"
     done
     
-    # Show workspace path and session for selected item
+    # Show workspace path for selected item
     echo ""
-    local selected_session="${SESSIONS[$SELECTED]}"
-    if [[ -n "$selected_session" ]]; then
-      echo -e "${pad}${DIM}Session: ${selected_session}${RESET}"
-    fi
     echo -e "${pad}${DIM}Path: ${WORKSPACES[$SELECTED]}${RESET}"
   fi
   
@@ -395,13 +333,10 @@ draw_screen() {
   
   if [[ ${#TYPES[@]} -gt 0 ]]; then
     local status="${STATUSES[$SELECTED]}"
-    local type="${TYPES[$SELECTED]}"
     if [[ "$status" == "UP" ]]; then
       echo -e "${pad}${DIM}↑/↓ navigate  Enter=open in VS Code${RESET}"
     elif [[ "$status" == "DOWN" ]]; then
       echo -e "${pad}${DIM}↑/↓ navigate  Enter=start container${RESET}"
-    elif [[ "$type" == "session" ]]; then
-      echo -e "${pad}${DIM}↑/↓ navigate  Enter=attach to session${RESET}"
     else
       echo -e "${pad}${DIM}↑/↓ navigate  Enter=open directory${RESET}"
     fi
@@ -436,17 +371,6 @@ open_workspace() {
   local idx=$1
   local workspace="${WORKSPACES[$idx]}"
   local status="${STATUSES[$idx]}"
-  local type="${TYPES[$idx]}"
-  local session="${SESSIONS[$idx]}"
-  
-  # If it's a session, attach to it
-  if [[ "$type" == "session" ]] && [[ -n "$session" ]]; then
-    tput cnorm
-    clear
-    echo "Attaching to session: $session"
-    echo ""
-    exec tmux attach -t "$session"
-  fi
   
   # If container is DOWN, start it first then open
   if [[ "$status" == "DOWN" ]]; then
@@ -481,7 +405,6 @@ stop_instance() {
   local repo="${REPOS[$idx]}"
   local branch="${BRANCHES[$idx]}"
   local git_status="${GIT_STATUSES[$idx]}"
-  local session="${SESSIONS[$idx]}"
   
   clear
   tput cnorm
@@ -499,37 +422,7 @@ stop_instance() {
     fi
   fi
   
-  if [[ "$type" == "session" ]]; then
-    # Session - kill it and optionally remove clone
-    echo -e "Kill session ${BOLD}${session}${RESET}?"
-    echo -e "${DIM}Workspace: ${workspace}${RESET}"
-    
-    if [[ "$is_safe" == "false" ]]; then
-      echo -e "${RED}Warning: Workspace has ${unsafe_reason}!${RESET}"
-    fi
-    
-    echo ""
-    if confirm "Kill session?"; then
-      ocdc_kill_session "$session"
-      echo "  Session killed."
-      
-      if [[ -d "$workspace" ]]; then
-        echo ""
-        if [[ "$is_safe" == "true" ]]; then
-          if confirm "Also remove the clone directory?"; then
-            rm -rf "$workspace"
-            local parent=$(dirname "$workspace")
-            [[ -d "$parent" ]] && [[ -z "$(ls -A "$parent")" ]] && rmdir "$parent" 2>/dev/null || true
-            echo "  Clone removed."
-          fi
-        else
-          echo -e "${DIM}Clone not removed (has ${unsafe_reason})${RESET}"
-        fi
-      fi
-    else
-      echo "  Cancelled."
-    fi
-  elif [[ "$type" == "orphan" ]]; then
+  if [[ "$type" == "orphan" ]]; then
     # Orphan clone - offer to remove
     echo -e "Remove orphaned clone ${BOLD}${repo}/${branch}${RESET}?"
     echo -e "${DIM}Path: ${workspace}${RESET}"
@@ -701,8 +594,8 @@ main() {
       D|X)
         clear
         tput cnorm
-        echo "This will clean up all safe orphans (clones + sessions)."
-        echo "Workspaces with uncommitted/unpushed changes will be skipped."
+        echo "This will clean up all safe orphaned clones."
+        echo "Clones with uncommitted/unpushed changes will be skipped."
         echo ""
         if confirm "Clean all safe orphans?"; then
           ocdc clean 2>&1 || true
