@@ -1389,8 +1389,9 @@ test_fresh_plugin_installation() {
   mkdir -p "$(dirname "$plugin_dest")"
   cp -r "$PLUGIN_DIR" "$plugin_dest"
   
-  # Config already has the plugin path, no need to modify
-  # (backup has the path, and we're testing if fresh copy works)
+  # Update config to include the plugin path
+  # (initialization step may have set it to empty plugins)
+  echo "{\"plugin\":[\"$plugin_dest\"]}" > "$config_file"
   
   # Test that opencode can start and load the plugin
   # Use a simple prompt that should work quickly
@@ -1403,7 +1404,7 @@ test_fresh_plugin_installation() {
   
   # Check results
   if [[ $exit_code -ne 0 ]]; then
-    # Check for common errors that we can handle
+    # Check for plugin-specific errors that indicate a real problem
     if echo "$output" | grep -q "Cannot find module"; then
       echo "FAIL: MODULE RESOLUTION ERROR: Plugin cannot resolve @opencode-ai/plugin"
       echo "This happens when plugin is symlinked instead of copied."
@@ -1411,15 +1412,10 @@ test_fresh_plugin_installation() {
       return 1
     fi
     
-    # Session errors are environment issues, not plugin issues - skip
-    if echo "$output" | grep -qE "(Session not found|session.*error|no session)"; then
-      echo "SKIP: opencode session management issue (environment, not plugin)"
-      return 0
-    fi
-    
-    # API/network errors are environment issues - skip
-    if echo "$output" | grep -qE "(API|network|timeout|connection|rate.?limit)"; then
-      echo "SKIP: opencode API/network issue (environment, not plugin)"
+    # Session errors are CI environment issues, not plugin issues
+    # opencode's session management may not work in non-interactive CI
+    if echo "$output" | grep -qE "(Session not found|session.*error)"; then
+      echo "SKIP: opencode session management issue (CI environment, not plugin)"
       return 0
     fi
     
