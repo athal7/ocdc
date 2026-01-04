@@ -164,7 +164,7 @@ poll_config_get_default_fetch_options() {
     linear_issue)
       cat << 'EOF'
 {
-  "assignee": "@me",
+  "assignee": null,
   "state": ["started", "unstarted"],
   "exclude_labels": [],
   "team": null
@@ -174,7 +174,7 @@ EOF
     github_issue)
       cat << 'EOF'
 {
-  "assignee": "@me",
+  "assignee": null,
   "state": "open",
   "labels": [],
   "repo": null,

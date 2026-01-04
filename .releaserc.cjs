@@ -18,11 +18,11 @@ module.exports = {
       }
     ],
     
-    // Update VERSION in bin/ocdc
+    // Update VERSION in bin/ocdc (use perl for cross-platform in-place edit)
     [
       '@semantic-release/exec',
       {
-        prepareCmd: "sed -i '' 's/^VERSION=\".*\"/VERSION=\"${nextRelease.version}\"/' bin/ocdc"
+        prepareCmd: "perl -i -pe 's/^VERSION=\".*\"/VERSION=\"${nextRelease.version}\"/' bin/ocdc"
       }
     ],
     

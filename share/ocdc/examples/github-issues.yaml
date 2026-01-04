@@ -32,17 +32,21 @@
 #     }
 #   }
 #
-# Fetch options (defaults shown):
+# Fetch options:
 #   fetch:
-#     assignee: "@me"          # Issues assigned to you
+#     assignee: "@me"          # Issues assigned to you (use null for any)
 #     state: "open"            # open, closed, or all
-#     labels: []               # Filter by labels
-#     repo: null               # Single repo (owner/repo)
-#     repos: null              # Multiple repos (array of owner/repo)
-#     org: null                # Filter by organization
+#     labels: ["bug"]          # Filter by labels
+#     repo: "owner/repo"       # Single repo
+#     repos: ["o/r1", "o/r2"]  # Multiple repos
+#     org: "myorg"             # Filter by organization
 
 id: github-issues
 source_type: github_issue
+
+# Fetch issues assigned to me
+fetch:
+  assignee: "@me"
 
 # Map GitHub repos/orgs/labels to local repositories
 # Most specific rule wins (repo+labels > labels > repo > org)

@@ -533,11 +533,17 @@ process_poll() {
   # Execute fetch command
   log "  Fetching items..."
   [[ "$VERBOSE" == "true" ]] && log "  Command: $fetch_cmd"
-  local items_json
-  if ! items_json=$(bash -c "$fetch_cmd" 2>&1); then
-    log_error "  Fetch command failed: $items_json"
+  local items_json fetch_stderr fetch_exit
+  # Capture stdout and stderr separately - MCP servers may output to stderr
+  fetch_stderr=$(mktemp)
+  items_json=$(bash -c "$fetch_cmd" 2>"$fetch_stderr")
+  fetch_exit=$?
+  if [[ $fetch_exit -ne 0 ]]; then
+    log_error "  Fetch command failed: $(cat "$fetch_stderr")"
+    rm -f "$fetch_stderr"
     return 1
   fi
+  rm -f "$fetch_stderr"
   
   # Check if we got valid JSON array
   local item_count
