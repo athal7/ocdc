@@ -3,7 +3,7 @@ import {
   readdirSync, unlinkSync, statSync 
 } from "fs"
 import { join, basename } from "path"
-import { execSync, spawnSync } from "child_process"
+import { execSync } from "child_process"
 
 // ============ Utility Functions ============
 
@@ -61,8 +61,8 @@ export const HOST_COMMANDS = [
   'code', 'vim', 'nvim', 'nano', 'open', 'cursor',
   // System inspection
   'which', 'type', 'echo', 'env', 'printenv', 'whoami', 'hostname',
-  // ocdc command (prevent recursion)
-  'ocdc',
+  // devcontainer command (prevent recursion)
+  'devcontainer',
   // Package managers (global installs on host)
   'brew', 'apt', 'apt-get', 'yum', 'dnf',
 ]
@@ -171,17 +171,6 @@ export function shouldRunOnHost(command) {
   return HOST_COMMANDS.includes(firstWord)
 }
 
-// ============ Container Status ============
-
-export function checkContainerRunning(workspace) {
-  try {
-    const result = spawnSync("ocdc", ["list"], { encoding: "utf-8" })
-    return result.stdout?.includes(workspace) || false
-  } catch {
-    return false
-  }
-}
-
 // ============ Secure Command Execution ============
 
 /**
@@ -199,33 +188,4 @@ export function shellQuote(str) {
   // Escape single quotes: close quote, add double-quoted single quote, reopen quote
   // "it's" becomes 'it'"'"'s'
   return "'" + str.replace(/'/g, "'\"'\"'") + "'"
-}
-
-/**
- * Builds an array of arguments for execFileSync to run ocdc exec.
- * This avoids shell interpolation by passing arguments as an array.
- * 
- * @param {string} workspace - The workspace path
- * @param {string} command - The command to execute (passed as single argument after --)
- * @returns {string[]} Array of arguments for execFileSync
- */
-export function buildOcdcExecArgs(workspace, command) {
-  return ['exec', '--workspace', workspace, '--', command]
-}
-
-/**
- * Builds a shell command string for ocdc exec with properly quoted workspace.
- * Used when the command must be passed as a string (e.g., for OpenCode bash tool).
- * 
- * Note: The command is NOT quoted because it's intentionally passed to the shell
- * for interpretation - users expect shell features like pipes, redirects, and
- * variable expansion to work. The workspace path IS quoted because it's a single
- * argument that should not be interpreted by the shell.
- * 
- * @param {string} workspace - The workspace path (will be shell-quoted)
- * @param {string} command - The command to execute (passed verbatim to shell)
- * @returns {string} Shell command string with safely quoted workspace
- */
-export function buildOcdcExecCommandString(workspace, command) {
-  return `ocdc exec --workspace ${shellQuote(workspace)} -- ${command}`
 }

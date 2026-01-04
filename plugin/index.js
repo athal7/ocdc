@@ -1,9 +1,7 @@
 import { 
   mkdirSync, existsSync, readdirSync, unlinkSync, copyFileSync 
 } from "fs"
-import { join, dirname } from "path"
-import { execSync, execFile } from "child_process"
-import { promisify } from "util"
+import { join, dirname, basename } from "path"
 import { fileURLToPath } from "url"
 import { tool } from "@opencode-ai/plugin/tool"
 
@@ -13,16 +11,20 @@ import {
   deleteSession,
   resolveWorkspace,
   shouldRunOnHost,
-  checkContainerRunning,
   getSessionsDir,
-  getCacheDir,
   runWithTimeout,
-  buildOcdcExecArgs,
-  buildOcdcExecCommandString,
+  shellQuote,
 } from "./helpers.js"
 
-// Promisified execFile for non-blocking async execution
-const execFileAsync = promisify(execFile)
+// Import from new core modules
+import {
+  up,
+  exec,
+  isContainerRunning,
+  checkDevcontainerCli,
+  getOverridePath,
+  PATHS,
+} from "./core/index.js"
 
 // Timeout for init operations (2 seconds)
 const INIT_TIMEOUT_MS = 2000
@@ -77,6 +79,26 @@ async function cleanupStaleSessions(client) {
   } catch {}
 }
 
+/**
+ * Build devcontainer exec command string for bash interception
+ * 
+ * @param {string} workspace - Workspace path (will be shell-quoted)
+ * @param {string} command - Command to execute (passed verbatim to shell)
+ * @returns {string} Shell command string
+ */
+function buildDevcontainerExecCommand(workspace, command) {
+  const overridePath = getOverridePath(workspace)
+  const hasOverride = existsSync(overridePath)
+  
+  let cmd = `devcontainer exec --workspace-folder ${shellQuote(workspace)}`
+  if (hasOverride) {
+    cmd += ` --override-config ${shellQuote(overridePath)}`
+  }
+  cmd += ` -- ${command}`
+  
+  return cmd
+}
+
 // ============ Plugin Export ============
 
 export const OCDC = async ({ client }) => {
@@ -104,18 +126,19 @@ export const OCDC = async ({ client }) => {
           }
           
           try {
-            // Use async execFile to avoid blocking the event loop
-            const { stdout } = await execFileAsync(
-              "ocdc",
-              buildOcdcExecArgs(session.workspace, command),
-              { encoding: "utf-8", maxBuffer: 10 * 1024 * 1024, signal: ctx.abort }
-            )
-            return stdout
+            // Use the core exec function
+            const result = await exec(session.workspace, command, { signal: ctx.abort })
+            
+            if (result.exitCode !== 0) {
+              return `Command failed (exit ${result.exitCode}):\n${result.stderr || result.stdout}`
+            }
+            
+            return result.stdout
           } catch (err) {
             if (err.name === 'AbortError') {
               return `Command cancelled.`
             }
-            return `Command failed: ${err.message}\n${err.stderr || ""}`
+            return `Command failed: ${err.message}`
           }
         }
       }),
@@ -136,11 +159,10 @@ export const OCDC = async ({ client }) => {
           const { target, create } = args
           const shouldCreate = create === "true" || create === true
           
-          // Verify CLI is installed
-          try {
-            execSync("which ocdc", { encoding: "utf-8", stdio: "pipe" })
-          } catch {
-            return "ocdc CLI not found.\n\nInstall with: `brew install athal7/tap/opencode-devcontainers`"
+          // Verify devcontainer CLI is installed
+          const hasCli = await checkDevcontainerCli()
+          if (!hasCli) {
+            return "devcontainer CLI not found.\n\nInstall with: `npm install -g @devcontainers/cli`"
           }
           
           // Status request (no target)
@@ -150,7 +172,7 @@ export const OCDC = async ({ client }) => {
               return "No devcontainer active for this session.\n\n" +
                      "Use `/devcontainer <branch>` to target a devcontainer."
             }
-            const running = checkContainerRunning(session.workspace)
+            const running = await isContainerRunning(session.workspace)
             return `Current devcontainer: ${session.repoName}/${session.branch}\n` +
                    `Workspace: ${session.workspace}\n` +
                    `Status: ${running ? "Running" : "Not running"}\n` +
@@ -167,34 +189,28 @@ export const OCDC = async ({ client }) => {
             return "No devcontainer was active for this session."
           }
           
-          // Resolve workspace
+          // Resolve workspace (check if clone already exists)
           const resolved = resolveWorkspace(target)
           
           if (!resolved) {
-            // Workspace doesn't exist - try to create it automatically
+            // Workspace doesn't exist - try to create it using core up()
             try {
-              // Use async execFile to avoid blocking the event loop
-              await execFileAsync('ocdc', ['up', target], {
-                encoding: "utf-8",
-                maxBuffer: 10 * 1024 * 1024,
-                timeout: 300000, // 5 minutes for container setup
-                signal: ctx.abort,
+              const result = await up(target, {
+                noOpen: true,
+                cwd: process.cwd(),
               })
               
-              // Re-resolve after creation
-              const newResolved = resolveWorkspace(target)
-              if (newResolved && !newResolved.ambiguous) {
-                saveSession(sessionID, {
-                  branch: newResolved.branch,
-                  workspace: newResolved.workspace,
-                  repoName: newResolved.repoName,
-                })
-                return `Workspace created and session now targeting: ${newResolved.repoName}/${newResolved.branch}\n` +
-                       `Workspace: ${newResolved.workspace}\n\n` +
-                       `All commands will run inside this container.\n` +
-                       `Use \`/devcontainer off\` to disable, or prefix with \`HOST:\` to run on host.`
-              }
-              return `Workspace created but could not auto-target.`
+              saveSession(sessionID, {
+                branch: result.branch,
+                workspace: result.workspace,
+                repoName: result.repo,
+              })
+              
+              return `Workspace created and session now targeting: ${result.repo}/${result.branch}\n` +
+                     `Workspace: ${result.workspace}\n` +
+                     `Port: ${result.port}\n\n` +
+                     `All commands will run inside this container.\n` +
+                     `Use \`/devcontainer off\` to disable, or prefix with \`HOST:\` to run on host.`
             } catch (err) {
               if (err.name === 'AbortError') {
                 return `Workspace creation cancelled.`
@@ -203,12 +219,11 @@ export const OCDC = async ({ client }) => {
               if (!shouldCreate) {
                 return `No devcontainer clone found for '${target}' and automatic creation failed.\n\n` +
                        `Error: ${err.message}\n\n` +
-                       `Would you like me to try creating it again? Call this tool again with create='true' to confirm, ` +
-                       `or run manually: \`ocdc up ${target}\``
+                       `Would you like me to try creating it again? Call this tool again with create='true' to confirm.`
               }
               
               // User explicitly asked for creation and it still failed
-              return `Failed to create workspace: ${err.message}\n${err.stderr || ""}`
+              return `Failed to create workspace: ${err.message}`
             }
           }
           
@@ -223,21 +238,17 @@ export const OCDC = async ({ client }) => {
           const { workspace, repoName, branch } = resolved
           
           // Check if container is running
-          const isRunning = checkContainerRunning(workspace)
+          const isRunning = await isContainerRunning(workspace)
           if (!isRunning) {
-            // Container exists but not running - try to start it automatically
+            // Container exists but not running - try to start it using core up()
             try {
-              // Use async execFile to avoid blocking the event loop
-              await execFileAsync('ocdc', ['up', target], {
-                encoding: "utf-8",
-                maxBuffer: 10 * 1024 * 1024,
-                timeout: 300000,
-                signal: ctx.abort,
-              })
+              const result = await up(workspace, { noOpen: true })
               
               saveSession(sessionID, { branch, workspace, repoName })
+              
               return `Container started and session now targeting: ${repoName}/${branch}\n` +
-                     `Workspace: ${workspace}\n\n` +
+                     `Workspace: ${workspace}\n` +
+                     `Port: ${result.port}\n\n` +
                      `All commands will run inside this container.\n` +
                      `Use \`/devcontainer off\` to disable, or prefix with \`HOST:\` to run on host.`
             } catch (err) {
@@ -249,12 +260,11 @@ export const OCDC = async ({ client }) => {
                 return `Devcontainer for '${branch}' exists but is not running and automatic start failed.\n\n` +
                        `Error: ${err.message}\n\n` +
                        `Workspace: ${workspace}\n\n` +
-                       `Would you like me to try starting it again? Call this tool again with create='true' to confirm, ` +
-                       `or run manually: \`ocdc up ${branch}\``
+                       `Would you like me to try starting it again? Call this tool again with create='true' to confirm.`
               }
               
               // User explicitly asked for start and it still failed
-              return `Failed to start container: ${err.message}\n${err.stderr || ""}`
+              return `Failed to start container: ${err.message}`
             }
           }
           
@@ -295,8 +305,8 @@ export const OCDC = async ({ client }) => {
       // Check if command should run on host
       if (hostCheck) return
       
-      // Wrap with ocdc exec (using safe command builder to prevent shell injection)
-      output.args.command = buildOcdcExecCommandString(session.workspace, cmd)
+      // Wrap with devcontainer exec (using safe command builder to prevent shell injection)
+      output.args.command = buildDevcontainerExecCommand(session.workspace, cmd)
     }
   }
 }
