@@ -10,6 +10,31 @@ module.exports = {
     // Generate release notes
     '@semantic-release/release-notes-generator',
     
+    // Update version in package.json (no npm publish)
+    [
+      '@semantic-release/npm',
+      {
+        npmPublish: false
+      }
+    ],
+    
+    // Update VERSION in bin/ocdc
+    [
+      '@semantic-release/exec',
+      {
+        prepareCmd: "sed -i '' 's/^VERSION=\".*\"/VERSION=\"${nextRelease.version}\"/' bin/ocdc"
+      }
+    ],
+    
+    // Commit the version changes
+    [
+      '@semantic-release/git',
+      {
+        assets: ['package.json', 'package-lock.json', 'bin/ocdc'],
+        message: 'chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}'
+      }
+    ],
+    
     // Create GitHub release with assets
     [
       '@semantic-release/github',
