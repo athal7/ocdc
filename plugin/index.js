@@ -122,7 +122,7 @@ export const OCDC = async ({ client }) => {
           
           const session = loadSession(sessionID)
           if (!session?.workspace) {
-            return "Error: No devcontainer context set for this session. Use ocdc_set_context first."
+            return "Error: No devcontainer context set for this session. Use `/devcontainer <branch>` first."
           }
           
           try {

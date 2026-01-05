@@ -24,10 +24,10 @@ function getPath(envVar, defaultPath) {
  */
 export const PATHS = {
   get config() {
-    return getPath('OCDC_CONFIG_DIR', join(homedir(), '.config/ocdc'))
+    return getPath('OCDC_CONFIG_DIR', join(homedir(), '.config/opencode-devcontainers'))
   },
   get cache() {
-    return getPath('OCDC_CACHE_DIR', join(homedir(), '.cache/ocdc'))
+    return getPath('OCDC_CACHE_DIR', join(homedir(), '.cache/opencode-devcontainers'))
   },
   get clones() {
     return getPath('OCDC_CLONES_DIR', join(homedir(), '.cache/devcontainer-clones'))

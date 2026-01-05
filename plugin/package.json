@@ -1,6 +1,6 @@
 {
-  "name": "@ocdc/plugin",
-  "version": "2.5.0",
+  "name": "opencode-devcontainers",
+  "version": "0.1.0",
   "type": "module",
   "main": "index.js",
   "peerDependencies": {

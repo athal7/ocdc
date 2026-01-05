@@ -1,44 +1,36 @@
 ---
-name: devcontainer
-description: Target a devcontainer for this session
+description: Target a devcontainer - /devcontainer <branch> or off
 ---
 
 # /devcontainer
 
-Target a devcontainer clone for command execution in this OpenCode session.
+Route commands to a devcontainer for isolated development.
 
 ## Usage
 
 ```
-/devcontainer [target]
+/devcontainer <branch>        # Target branch (creates clone if needed)
+/devcontainer <repo>/<branch> # Target specific repo's branch
+/devcontainer off             # Stop routing, run on host
+/devcontainer                 # Show current status
 ```
-
-## Arguments
-
-- `target` - One of:
-  - Empty: Show current status
-  - `<branch>`: Target branch in current repo's clones
-  - `<repo>/<branch>`: Target specific repo/branch
-  - `off`: Disable devcontainer targeting
 
 ## Examples
 
 ```
-/devcontainer              # Show current devcontainer status
-/devcontainer feature-x    # Target feature-x branch clone
-/devcontainer myapp/main   # Target main branch of myapp
-/devcontainer off          # Disable, run commands on host
+/devcontainer feature-auth    # Work on feature-auth branch
+/devcontainer api/main        # Work on api repo's main branch  
+/devcontainer off             # Back to host execution
 ```
 
-## Behavior
+## What Happens
 
-When a devcontainer is targeted:
-- Most commands run inside the container automatically
-- Git, file reading, and editors run on host
-- Prefix with `HOST:` to force host execution
+When you run `/devcontainer feature-x`:
+1. Creates a shallow clone at `~/.cache/opencode-devcontainers/<repo>/feature-x` (if needed)
+2. Starts the devcontainer with auto-assigned port
+3. Routes subsequent bash commands to the container
 
-The plugin handles:
-- Creating shallow clones for each branch
-- Auto-assigning ports from configurable range (13000-13099)
-- Starting/stopping devcontainers as needed
-- Routing commands to the correct container
+Commands that stay on host (automatic):
+- `git`, `gh`, `code`, `cursor` - version control and editors
+- File reads via OpenCode tools - already on host filesystem
+- Prefix any command with `HOST:` to force host execution

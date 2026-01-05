@@ -31,10 +31,10 @@ export async function runWithTimeout(fn, ms) {
   }
 }
 
-// Directory getters - respect OCDC environment variables
+// Directory getters - respect environment variables
 export function getCacheDir() {
   return process.env.OCDC_CACHE_DIR || 
-    join(process.env.HOME, ".cache/ocdc")
+    join(process.env.HOME, ".cache/opencode-devcontainers")
 }
 
 export function getSessionsDir() {

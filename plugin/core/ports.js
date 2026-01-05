@@ -184,7 +184,7 @@ export async function allocatePort(workspace, repo, branch) {
 
     throw new Error(
       `No available ports in range ${config.portRangeStart}-${config.portRangeEnd}. ` +
-      `Use 'ocdc down' to stop unused instances.`
+      `Stop unused devcontainers to free ports.`
     )
   })
 }
