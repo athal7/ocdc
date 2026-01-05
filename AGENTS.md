@@ -26,52 +26,36 @@ Before committing changes, verify documentation is updated to reflect code chang
 
 ## Post-PR: Release and Upgrade Workflow
 
-After a PR is merged to main, follow this workflow to upgrade the local installation:
+After a PR is merged to main, semantic-release automatically:
+1. Creates a new version based on commit messages
+2. Publishes to npm
+3. Creates a GitHub release
 
-### 1. Watch CI Run
-
-Watch the CI workflow until it completes (creates release via semantic-release):
-
-```bash
-gh run watch -R athal7/opencode-devcontainers
-```
-
-### 2. Verify Release Created
-
-Confirm the new release was published:
+### Verify Release
 
 ```bash
 gh release list -R athal7/opencode-devcontainers -L 1
+npm view opencode-devcontainers version
 ```
 
-### 3. Wait for Homebrew Formula Update
+### Upgrade
 
-The formula is auto-updated after release. Poll until available:
+OpenCode automatically updates npm plugins on startup. Just restart OpenCode.
 
-```bash
-brew update
-brew info athal7/tap/opencode-devcontainers | head -3
+To force a specific version:
+```json
+{
+  "plugin": ["opencode-devcontainers@5.0.0"]
+}
 ```
 
-Compare version with the release. If not updated yet, wait and retry.
-
-### 4. Upgrade Installation
-
-```bash
-brew upgrade athal7/tap/opencode-devcontainers
-```
-
-### 5. Verify Upgrade
-
-Run OpenCode and check the plugin loads correctly.
-
-### 6. Config Migration (if needed)
+### Config Migration (if needed)
 
 Config file locations:
 - Main config: `~/.config/ocdc/config.json`
 - Cache/state: `~/.cache/ocdc/`
 
-If config format changed, check release notes for breaking changes:
+If config format changed, check release notes:
 
 ```bash
 gh release view -R athal7/opencode-devcontainers

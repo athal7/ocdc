@@ -16,11 +16,15 @@ When working on multiple branches, you need isolated development environments. G
 
 ## Installation
 
-```bash
-brew install athal7/tap/opencode-devcontainers
+Add to your `~/.config/opencode/opencode.json`:
+
+```json
+{
+  "plugin": ["opencode-devcontainers"]
+}
 ```
 
-This installs the OpenCode plugin. After installation, run `opencode` and the plugin will be available.
+OpenCode automatically installs npm plugins on startup.
 
 ### Dependencies
 

@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write  # Enable OIDC for npm trusted publishing
 
 jobs:
   test:
@@ -82,32 +83,3 @@ jobs:
         uses: cycjimmy/semantic-release-action@v4
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  update-homebrew:
-    needs: release
-    if: needs.release.outputs.new_release_published == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Generate GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ vars.HOMEBREW_APP_ID }}
-          private-key: ${{ secrets.HOMEBREW_APP_PRIVATE_KEY }}
-          owner: athal7
-          repositories: homebrew-tap
-
-      - name: Update Homebrew formula
-        uses: mislav/bump-homebrew-formula-action@v3
-        with:
-          formula-name: opencode-devcontainers
-          homebrew-tap: athal7/homebrew-tap
-          tag-name: v${{ needs.release.outputs.new_release_version }}
-          push-to: athal7/homebrew-tap
-          base-branch: main
-          create-pullrequest: false
-          create-branch: false
-          commit-message: |
-            chore: bump {{formulaName}} to {{version}}
-        env:
-          COMMITTER_TOKEN: ${{ steps.app-token.outputs.token }}

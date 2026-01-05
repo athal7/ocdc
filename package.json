@@ -8,6 +8,10 @@
     "type": "git",
     "url": "https://github.com/athal7/opencode-devcontainers.git"
   },
+  "publishConfig": {
+    "provenance": true,
+    "access": "public"
+  },
   "keywords": [
     "devcontainer",
     "docker",
