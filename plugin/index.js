@@ -155,7 +155,7 @@ export const devcontainers = async ({ client }) => {
           ),
         },
         async execute(args, ctx) {
-          const { sessionID } = ctx
+          const { sessionID, abort: signal } = ctx
           const { target, create } = args
           const shouldCreate = create === "true" || create === true
           
@@ -198,6 +198,7 @@ export const devcontainers = async ({ client }) => {
               const result = await up(target, {
                 noOpen: true,
                 cwd: process.cwd(),
+                signal,
               })
               
               saveSession(sessionID, {
@@ -242,7 +243,7 @@ export const devcontainers = async ({ client }) => {
           if (!isRunning) {
             // Container exists but not running - try to start it using core up()
             try {
-              const result = await up(workspace, { noOpen: true })
+              const result = await up(workspace, { noOpen: true, signal })
               
               saveSession(sessionID, { branch, workspace, repoName })
               

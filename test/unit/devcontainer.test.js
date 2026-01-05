@@ -224,6 +224,67 @@ describe('up (integration)', () => {
     // Just verify the setup is correct
     assert.ok(true)
   })
+
+  test('accepts signal option for cancellation', async () => {
+    // This test verifies up() accepts a signal option
+    // We use dryRun to avoid actually starting a container
+    const controller = new AbortController()
+    
+    try {
+      const result = await up(workspaceDir, { 
+        dryRun: true, 
+        signal: controller.signal 
+      })
+      
+      // dryRun should return without throwing
+      assert.ok(result.dryRun, 'Should be a dry run result')
+      assert.ok(result.workspace, 'Should have workspace')
+      assert.ok(result.port, 'Should have port')
+    } catch (e) {
+      // If devcontainer CLI not installed, that's fine for this test
+      if (!e.message.includes('devcontainer')) {
+        throw e
+      }
+    }
+  })
+})
+
+describe('runCommand abort signal', () => {
+  // We need to test that runCommand properly handles AbortSignal
+  // To test this, we export runCommand from devcontainer.js
+  
+  test('abort signal cancels running command', async () => {
+    // Import runCommand which is now exported for testing
+    const { runCommand } = await import('../../plugin/core/devcontainer.js')
+    
+    const controller = new AbortController()
+    const startTime = Date.now()
+    
+    // Abort after 50ms
+    setTimeout(() => controller.abort(), 50)
+    
+    // Run a command that would take 5 seconds
+    try {
+      await runCommand('sleep', ['5'], { signal: controller.signal })
+      assert.fail('Should have thrown AbortError')
+    } catch (err) {
+      const elapsed = Date.now() - startTime
+      assert.strictEqual(err.name, 'AbortError', 'Error should be AbortError')
+      // Should abort much faster than the 5 second sleep command
+      // Using 2000ms as threshold to be generous for slow CI systems
+      assert.ok(elapsed < 2000, `Should abort quickly, took ${elapsed}ms`)
+    }
+  })
+  
+  test('completed command returns normally without abort', async () => {
+    const { runCommand } = await import('../../plugin/core/devcontainer.js')
+    
+    const result = await runCommand('echo', ['hello'])
+    
+    assert.strictEqual(result.success, true)
+    assert.strictEqual(result.stdout, 'hello')
+    assert.strictEqual(result.exitCode, 0)
+  })
 })
 
 describe('down', () => {

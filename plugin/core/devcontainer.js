@@ -23,6 +23,7 @@ import { existsSync } from 'fs'
  * @param {string} cmd - Command to run
  * @param {string[]} args - Arguments
  * @param {object} [options] - spawn options
+ * @param {AbortSignal} [options.signal] - Abort signal for cancellation (Node.js 15.4+)
  * @returns {Promise<{stdout: string, stderr: string, exitCode: number, success: boolean}>}
  */
 async function runCommand(cmd, args, options = {}) {
@@ -133,6 +134,7 @@ export function buildExecArgs(workspace, command, options = {}) {
  * @param {boolean} [options.noOpen] - Don't open VS Code
  * @param {boolean} [options.dryRun] - Return command without executing
  * @param {string} [options.cwd] - Working directory (for branch resolution)
+ * @param {AbortSignal} [options.signal] - Abort signal for cancellation
  * @returns {Promise<{workspace: string, port: number, repo: string, branch: string}>}
  */
 export async function up(workspaceOrBranch, options = {}) {
@@ -201,7 +203,16 @@ export async function up(workspaceOrBranch, options = {}) {
   }
 
   // Run devcontainer up
-  const result = await runCommand('devcontainer', args)
+  let result
+  try {
+    result = await runCommand('devcontainer', args, {
+      signal: options.signal,
+    })
+  } catch (err) {
+    // Clean up port allocation on abort or error
+    await releasePort(workspace)
+    throw err
+  }
 
   if (!result.success) {
     // Clean up port allocation on failure
@@ -350,6 +361,9 @@ export async function isContainerRunning(workspace) {
   }
 }
 
+// Export runCommand for testing
+export { runCommand }
+
 export default {
   checkDevcontainerCli,
   buildUpArgs,
@@ -359,4 +373,5 @@ export default {
   down,
   list,
   isContainerRunning,
+  runCommand,
 }
