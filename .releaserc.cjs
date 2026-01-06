@@ -10,8 +10,8 @@ module.exports = {
     // Generate release notes
     '@semantic-release/release-notes-generator',
     
-    // Update version in package.json and publish to npm
-    '@semantic-release/npm',
+    // Update version in package.json and publish to npm with provenance
+    ['@semantic-release/npm', { provenance: true }],
     
     // Commit the version changes
     [
