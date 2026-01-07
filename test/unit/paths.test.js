@@ -31,7 +31,7 @@ describe('PATHS', () => {
     delete process.env.OCDC_CLONES_DIR
     
     // Getters return default paths when env vars are unset
-    assert.strictEqual(PATHS.config, join(homedir(), '.config/opencode-devcontainers'))
+    assert.strictEqual(PATHS.config, join(homedir(), '.config/opencode/devcontainers'))
     assert.strictEqual(PATHS.cache, join(homedir(), '.cache/opencode-devcontainers'))
     assert.strictEqual(PATHS.clones, join(homedir(), '.cache/devcontainer-clones'))
   })
