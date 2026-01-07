@@ -1,6 +1,6 @@
 {
   "name": "opencode-devcontainers",
-  "version": "1.0.0",
+  "version": "0.1.1",
   "description": "OpenCode plugin for running devcontainers with auto-assigned ports",
   "type": "module",
   "main": "plugin/index.js",
