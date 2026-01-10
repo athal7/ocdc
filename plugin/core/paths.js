@@ -29,8 +29,9 @@ export const PATHS = {
   get cache() {
     return getPath('OCDC_CACHE_DIR', join(homedir(), '.cache/opencode-devcontainers'))
   },
+  // Clones live alongside opencode desktop worktrees for discoverability
   get clones() {
-    return getPath('OCDC_CLONES_DIR', join(homedir(), '.cache/devcontainer-clones'))
+    return getPath('OCDC_CLONES_DIR', join(homedir(), '.local/share/opencode/clone'))
   },
   get ports() {
     return join(this.cache, 'ports.json')

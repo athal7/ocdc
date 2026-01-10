@@ -42,9 +42,10 @@ export function getSessionsDir() {
     join(getCacheDir(), "opencode-sessions")
 }
 
+// Clones live alongside opencode desktop worktrees for discoverability
 export function getClonesDir() {
   return process.env.OCDC_CLONES_DIR ||
-    join(process.env.HOME, ".cache/devcontainer-clones")
+    join(process.env.HOME, ".local/share/opencode/clone")
 }
 
 // Commands that should always run on host, not in container
